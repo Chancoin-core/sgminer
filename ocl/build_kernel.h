@@ -11,8 +11,8 @@
 #endif
 
 typedef struct _build_kernel_data {
-  char source_filename[255];
-  char binary_filename[255];
+  char source_filename[256];
+  char binary_filename[256];
   char compiler_options[512];
 
   cl_context context;
@@ -20,7 +20,7 @@ typedef struct _build_kernel_data {
 
 // for compiler options
   char platform[64];
-  char sgminer_path[255];
+  char sgminer_path[256];
   const char *kernel_path;
   size_t work_size;
   float opencl_version;

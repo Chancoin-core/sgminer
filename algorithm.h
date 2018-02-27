@@ -1,6 +1,10 @@
 #ifndef ALGORITHM_H
 #define ALGORITHM_H
 
+
+//#define DEBUG_NIGHTCAP_HASH
+ 
+
 #ifdef __APPLE_CC__
 #include <OpenCL/opencl.h>
 #else

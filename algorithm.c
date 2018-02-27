@@ -1342,7 +1342,6 @@ static cl_int queue_ethash_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_u
   return(status);
 }
 
-//#define DEBUG_NIGHTCAP_HASH
 // NOTE: if using this, be sure to change the name of the search function in nightcap.cl
 //#define DEBUG_NIGHTCAP_HASH_HASH_OUTPUT
 
@@ -1588,7 +1587,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
       applog(LOG_ERR, "Error %d: Setting args for the DAG kernel and/or executing it.", status);
       return(status);
     }
-    applog(LOG_NOTICE, "DAG ready on %s (%u MB)", cgpu->name, (unsigned)(DAGSize >> 20));
+    applog(LOG_NOTICE, "DAG ready on %s (%u MB)", cgpu->name, (unsigned)(DAGSize >> 20)); 
     //exit(0); // DEBUG
   }
 
@@ -1603,7 +1602,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
     cl_event HashGenEvent;
     size_t items = 256;
     size_t offset_items = 0;
-    uint32_t *HASH_DEBUG = (uint32_t*)malloc(256 * 32);
+    uint32_t *HASH_DEBUG = (uint32_t*)malloc(256 * 32); 
 
 #ifndef DEBUG_NIGHTCAP_HASH_HASH_OUTPUT
     // We need to set a target.
@@ -1611,7 +1610,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
     le_target = 0x0071BA79 + 1;
 #endif
 
-    memset(HASH_DEBUG, 255, 256 * 4);
+    memset(HASH_DEBUG, 255, 256 * 4); 
 
     num = 0;
     CL_SET_ARG(clState->buffer1);       // output nonces (BUFFERSIZE, i.e. 256 ints)
@@ -1659,7 +1658,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
       }
 
 #ifdef DEBUG_NIGHTCAP_HASH_HASH_OUTPUT
-      for (uint32_t i = 0; i < 256; i++) {
+      for (uint32_t i = 0; i < 256; i++) { 
         applog(LOG_INFO, "HASH[%u] == %s", i - offset_items, debug_print_nightcap_hash(&HASH_DEBUG[i * 8]));
       }
 
@@ -1674,15 +1673,15 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
 
     }
 
-    test_hashimoto(height_number);
+    test_hashimoto(height_number);  
 
     exit(0);
   }
-#endif
+#endif 
 
   CL_SET_ARG(clState->outputBuffer);  // output nonces (BUFFERSIZE, i.e. 256 ints)
-  CL_SET_ARG(clState->CLbuffer0);     // input block header
-  CL_SET_ARG(clState->DAG);           // DAG
+  CL_SET_ARG(clState->CLbuffer0);     // input block header 
+  CL_SET_ARG(clState->DAG);           // DAG 
   CL_SET_ARG(clState->padbuffer8);    // lyra node buffer
   CL_SET_ARG(ItemsArg);               // number of dag items
   CL_SET_ARG(HeightArg);              // number of dag items
