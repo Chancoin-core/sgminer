@@ -1375,9 +1375,15 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
 
   //static_assert(sizeof(NightcapNode) == 32);
 
-  // We need the target in flipped format
+  if (blk->work->work_difficulty > blk->work->device_diff) {
+    // We have a little problem here, device difficulty has been ramped down too much while the 
+    // pool has suddenly sent us a more difficult share. In this case its better to work on the more difficult 
+    // target.
+    le_target = *(cl_uint *)(blk->work->target + 28); // target we should be looking for in kernel
+  } else {
+    le_target = *(cl_uint *)(blk->work->device_target + 28); // target we should be looking for in kernel
+  }
 
-  le_target = *(cl_uint *)(blk->work->device_target + 28); // target we should be looking for in kernel
 
   //applog(LOG_INFO, "target=%s\n", debug_print_nightcap_hash((const uint*)(blk->work->device_target)));
 

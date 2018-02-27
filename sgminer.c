@@ -7080,141 +7080,6 @@ static void get_work_prepare_thread(struct thr_info *mythr, struct work *work)
     //apply switcher options
     apply_switcher_options(pool_switch_options, work->pool);
 
-    //devices
-    /*if(opt_isset(pool_switch_options, SWITCHER_APPLY_DEVICE))
-    {
-      //reset devices flags
-      opt_devs_enabled = 0;
-      for (i = 0; i < MAX_DEVICES; i++)
-          devices_enabled[i] = false;
-
-      //assign pool devices if any
-      if(!empty_string((opt = get_pool_setting(work->pool->devices, ((!empty_string(default_profile.devices))?default_profile.devices:"all"))))) {
-        set_devices((char *)opt);
-      }
-    }
-
-    //lookup gap
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_LG))
-    {
-      if(!empty_string((opt = get_pool_setting(work->pool->lookup_gap, default_profile.lookup_gap))))
-        set_lookup_gap((char *)opt);
-    }
-
-    //raw intensity from pool
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_RAWINT))
-    {
-      applog(LOG_DEBUG, "Switching to rawintensity: pool = %s, default = %s", work->pool->rawintensity, default_profile.rawintensity);
-      opt = get_pool_setting(work->pool->rawintensity, default_profile.rawintensity);
-      applog(LOG_DEBUG, "rawintensity -> %s", opt);
-      set_rawintensity(opt);
-    }
-    //xintensity
-    else if(opt_isset(pool_switch_options, SWITCHER_APPLY_XINT))
-    {
-      applog(LOG_DEBUG, "Switching to xintensity: pool = %s, default = %s", work->pool->xintensity, default_profile.xintensity);
-      opt = get_pool_setting(work->pool->xintensity, default_profile.xintensity);
-      applog(LOG_DEBUG, "xintensity -> %s", opt);
-      set_xintensity(opt);
-    }
-    //intensity
-    else if(opt_isset(pool_switch_options, SWITCHER_APPLY_INT))
-    {
-      applog(LOG_DEBUG, "Switching to intensity: pool = %s, default = %s", work->pool->intensity, default_profile.intensity);
-      opt = get_pool_setting(work->pool->intensity, default_profile.intensity);
-      applog(LOG_DEBUG, "intensity -> %s", opt);
-      set_intensity(opt);
-    }
-    //default basic intensity
-    else if(opt_isset(pool_switch_options, SWITCHER_APPLY_INT8))
-    {
-      default_profile.intensity = strdup("8");
-      set_intensity(default_profile.intensity);
-    }
-
-    //shaders
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_SHADER))
-    {
-      if(!empty_string((opt = get_pool_setting(work->pool->shaders, default_profile.shaders))))
-        set_shaders((char *)opt);
-    }
-
-    //thread-concurrency
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_TC))
-    {
-      // neoscrypt - if not specified set TC to 0 so that TC will be calculated by intensity settings
-      if (work->pool->algorithm.type == ALGO_NEOSCRYPT) {
-        opt = ((empty_string(work->pool->thread_concurrency))?"0":get_pool_setting(work->pool->thread_concurrency, default_profile.thread_concurrency));
-      }
-      // otherwise use pool/profile setting or default to default profile setting
-      else {
-        opt = get_pool_setting(work->pool->thread_concurrency, default_profile.thread_concurrency);
-      }
-
-      if(!empty_string(opt)) {
-        set_thread_concurrency((char *)opt);
-      }
-    }
-
-    //worksize
-    if(opt_isset(pool_switch_options, SWITCHER_APPLY_WORKSIZE))
-    {
-      if(!empty_string((opt = get_pool_setting(work->pool->worksize, default_profile.worksize))))
-        set_worksize(opt);
-    }
-
-    #ifdef HAVE_ADL
-      //GPU clock
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_ENGINE))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_engine, default_profile.gpu_engine))))
-          set_gpu_engine((char *)opt);
-      }
-
-      //GPU memory clock
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_MEMCLOCK))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_memclock, default_profile.gpu_memclock))))
-          set_gpu_memclock((char *)opt);
-      }
-
-      //GPU fans
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_FAN))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_fan, default_profile.gpu_fan))))
-          set_gpu_fan((char *)opt);
-      }
-
-      //GPU powertune
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_POWERTUNE))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_powertune, default_profile.gpu_powertune))))
-          set_gpu_powertune((char *)opt);
-      }
-
-      //GPU vddc
-      if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_VDDC))
-      {
-        if(!empty_string((opt = get_pool_setting(work->pool->gpu_vddc, default_profile.gpu_vddc))))
-          set_gpu_vddc((char *)opt);
-      }
-
-      //apply gpu settings
-      for (i = 0; i < nDevs; i++)
-      {
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_ENGINE))
-          set_engineclock(i, gpus[i].min_engine);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_MEMCLOCK))
-          set_memoryclock(i, gpus[i].gpu_memclock);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_FAN))
-          set_fanspeed(i, gpus[i].min_fan);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_POWERTUNE))
-          set_powertune(i, gpus[i].gpu_powertune);
-        if(opt_isset(pool_switch_options, SWITCHER_APPLY_GPU_VDDC))
-          set_vddc(i, gpus[i].gpu_vddc);
-      }
-    #endif
-  */
     // Change algorithm for each thread (thread_prepare calls initCl)
     if(opt_isset(pool_switch_options, SWITCHER_SOFT_RESET))
       applog(LOG_DEBUG, "Soft Reset... Restarting threads...");
@@ -7606,24 +7471,31 @@ static void hash_sole_work(struct thr_info *mythr)
 
     wu = total_diff1 / total_secs * 60;
     if (wu > 30 && drv->working_diff < drv->max_diff &&
-      drv->working_diff < work->work_difficulty) {
-      drv->working_diff++;
-      applog(LOG_DEBUG, "Driver %s working diff changed to %.0f",
-           drv->dname, drv->working_diff);
-      work->device_diff = MIN(drv->working_diff, work->work_difficulty);
-    } else if (drv->working_diff > work->work_difficulty)
-      drv->working_diff = work->work_difficulty;
+        drv->working_diff < work->work_difficulty) {
+        drv->working_diff++;
+        applog(LOG_DEBUG, "Driver %s working diff changed to %.0f",
+            drv->dname, drv->working_diff);
+        work->device_diff = MIN(drv->working_diff, work->work_difficulty);
+    }
+    else if (drv->working_diff > work->work_difficulty) {
+        drv->working_diff = work->work_difficulty;
+    }
 
     if (work->pool->algorithm.type == ALGO_NEOSCRYPT) {
-      set_target_neoscrypt(work->device_target, work->device_diff, work->thr_id);
-    } else if (work->pool->algorithm.type == ALGO_ETHASH) {
-      double mult = 60e6;
-      work->device_diff = MIN(work->work_difficulty, mult);
-      *(uint64_t*) (work->device_target + 24) = bits64 / work->device_diff;
-      work->device_diff /= mult;
+        set_target_neoscrypt(work->device_target, work->device_diff, work->thr_id);
     }
-    else
-      set_target(work->device_target, work->device_diff, work->pool->algorithm.diff_multiplier2, work->thr_id);
+    else if (work->pool->algorithm.type == ALGO_ETHASH) {
+        double mult = 60e6;
+        work->device_diff = MIN(work->work_difficulty, mult);
+        *(uint64_t*)(work->device_target + 24) = bits64 / work->device_diff;
+        work->device_diff /= mult;
+    }
+    else {
+        //applog(LOG_INFO, "Setting device target (diff=%f) in hash_sole_work, work=%lx", work->device_diff, work);
+        set_target(work->device_target, work->device_diff, work->pool->algorithm.diff_multiplier2, work->thr_id);
+    }
+
+    //applog(LOG_INFO, "Reported stratum device difficulty is %f, work difficulty is %f, work is %lx", work->sdiff, work->work_difficulty, work);
 
     do {
       cgtime(&tv_start);

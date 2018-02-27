@@ -1667,7 +1667,8 @@ __kernel void search(
 
 	if (block[7] <= target)
 	{
-		//printf("Nonce %u Found target, %lx <= %lx\n", gid, out_long[3], target);
+		//printf("Nonce %u Found target, %lx <= %lx BLOCK {0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x}\n", gid, block[7], target,
+		//	block[0], block[1], block[2], block[3], block[4], block[5], block[6], block[7]);
 		uint slot = min(MAX_OUTPUTS-1u, convert_uint(atomic_inc(&g_output[MAX_OUTPUTS])));
 		g_output[slot] = gid;
 	}
