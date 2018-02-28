@@ -23,7 +23,7 @@
 #include "ADL_SDK/adl_sdk.h"
 #include "compat.h"
 
-#if defined (__unix__)
+#if defined (__unix__) || defined(__MACH__)
 # include <dlfcn.h>
 # include <stdlib.h>
 # include <unistd.h>
@@ -69,7 +69,7 @@ static void __stdcall ADL_Main_Memory_Free (void **lpBuffer)
   }
 }
 
-#if defined (UNIX)
+#if defined (UNIX) || defined(__MACH__)
 // equivalent functions in linux
 static void *GetProcAddress(void *pLibrary, const char *name)
 {
@@ -1814,7 +1814,7 @@ static void free_adl(void)
 {
   ADL_Main_Memory_Free ((void **)&lpInfo);
   ADL_Main_Control_Destroy ();
-#if defined (UNIX)
+#if defined (UNIX) || defined(__MACH__)
   dlclose(hDLL);
 #else
   FreeLibrary(hDLL);

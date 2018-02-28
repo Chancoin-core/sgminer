@@ -241,7 +241,7 @@ static inline int fsync (int fd)
 #endif
 
 #ifdef HAVE_NVML
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__MACH__)
 #include "NVML/nvml.h"
 #endif
 void nvml_init();
@@ -249,15 +249,15 @@ void nvml_gpu_clocks(const unsigned int, unsigned int *gpu, unsigned int *mem);
 void nvml_gpu_defclocks(const unsigned int, unsigned int *gpu, unsigned int *mem);
 void nvml_gpu_ids(const unsigned int, int *vid, int *pid, int *svid, int *spid);
 void nvml_gpu_temp_and_fanspeed(const unsigned int, float *, int *);
-void nvml_gpu_usage(const unsigned int, unsigned int *w, unsigned int *limit);
+void nvml_gpu_usage(const unsigned int busid, unsigned int *w, unsigned int *limit);
 void nvml_print_devices();
 void nvml_shutdown();
 #endif
 
 #ifdef __linux__
-void sysfs_gpu_temp_and_fanspeed(const unsigned int, float *, int *);
+void sysfs_gpu_temp_and_fanspeed(const unsigned int a, float *b, int *c);
 #else
-inline void sysfs_gpu_temp_and_fanspeed(const unsigned int, float *, int *) {}
+inline void sysfs_gpu_temp_and_fanspeed(const unsigned int a, float *b, int *c) {}
 #endif
 
 /* Adding a device here will update all macros in the code that use

@@ -1002,6 +1002,10 @@ void cgtimer_sub(cgtimer_t *a, cgtimer_t *b, cgtimer_t *res)
 }
 #endif /* WIN32 */
 
+#ifdef __MACH__
+#undef CLOCK_MONOTONIC
+#endif
+
 #ifdef CLOCK_MONOTONIC /* Essentially just linux */
 void cgtimer_time(cgtimer_t *ts_start)
 {
