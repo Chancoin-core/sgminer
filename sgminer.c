@@ -124,6 +124,10 @@ bool opt_hamsi_short = false;
 bool opt_blake_compact = false;
 bool opt_luffa_parallel = false;
 
+// Nightcap algorithm options
+bool opt_nc_blake_precalc = false;
+//
+
 struct list_head scan_devices;
 bool devices_enabled[MAX_DEVICES];
 int opt_devs_enabled;
@@ -1390,6 +1394,11 @@ struct opt_table opt_config_table[] = {
   OPT_WITHOUT_ARG("--blake-compact",
       opt_set_bool, &opt_blake_compact,
       "Set SPH_COMPACT_BLAKE64 for Xn derived algorithms (Can give better hashrate for some GPUs)"),
+
+	OPT_WITHOUT_ARG("--blake-precalc",
+		opt_set_bool, &opt_nc_blake_precalc,
+		"Precalculate first chunk of the blake hash on the CPU (May improve hashrate on high-end systems)"),
+
 #ifdef HAVE_CURSES
   OPT_WITHOUT_ARG("--compact",
       opt_set_bool, &opt_compact,
@@ -7436,7 +7445,7 @@ static void hash_sole_work(struct thr_info *mythr)
   const long cycle = opt_log_interval / 5 ? 5 : 1;
   const bool primary = mythr->device_thread == 0;
   struct timeval diff, sdiff, wdiff = {0, 0};
-  uint32_t max_nonce = drv->can_limit_work(mythr);
+  uint32_t max_nonce = 0x7fffffff;// drv->can_limit_work(mythr);
   int64_t hashes_done = 0;
 
   tv_end = &getwork_start;

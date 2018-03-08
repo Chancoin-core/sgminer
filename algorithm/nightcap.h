@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <math.h>
+#include "miner.h"
 
 static uint64_t nightcap_dag_sizes[2048] =
 {
@@ -832,5 +833,6 @@ typedef union _NightcapNode
 
 
 void nightcap_regenhash(struct work *work);
+void precalc_nightcap_hash(dev_blk_ctx* blk, uint32_t *midstate, uint32_t *pdata);
 
 #endif		// __ETHASH_H

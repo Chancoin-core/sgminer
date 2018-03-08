@@ -979,8 +979,8 @@ void reduceDuplexf(ulong4* state , __global ulong4* DMatrix)
 //#pragma unroll 4
 	 for (int i = 0; i < 4; i++)
 	 {
-		 uint s1 = ps1 + i*memshift;
-		 uint s2 = ps2 - i*memshift;
+		 const uint s1 = ps1 + i*memshift;
+		 const uint s2 = ps2 - i*memshift;
 
 		 for (int j = 0; j < 3; j++)  state1[j] = (DMatrix)[j + s1];
 
@@ -1107,6 +1107,17 @@ inline void blake80_noswap(const uint* input_words, uint* out_words)
 
 	//printf("blake32 full step T0=0x%x T1=0x%x H=[%x,%x,%x,%x,%x,%x,%x,%x] S=[%x,%x,%x,%x]\n", T0, T1, H0, H1, H2, H3, H4, H5, H6, H7, S0, S1, S2, S3);
 
+
+#ifdef PRECALC_BLAKE
+	H0 = input_words[0];
+	H1 = input_words[1];
+	H2 = input_words[2];
+	H3 = input_words[3];
+	H4 = input_words[4];
+	H5 = input_words[5];
+	H6 = input_words[6];
+	H7 = input_words[7];
+#else
 	BLAKE256_COMPRESS_BEGIN((input_words[0]),(input_words[1]),(input_words[2]),(input_words[3]),(input_words[4]),(input_words[5]),(input_words[6]),(input_words[7]),(input_words[8]),(input_words[9]),(input_words[10]),(input_words[11]),(input_words[12]),(input_words[13]),(input_words[14]),(input_words[15]));
 #pragma unroll 
 	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
@@ -1120,6 +1131,7 @@ inline void blake80_noswap(const uint* input_words, uint* out_words)
 		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
 	}
 	BLAKE256_COMPRESS_END;
+#endif
 
 	//printf("blake32 after step T0=0x%x T1=0x%x H=[%x,%x,%x,%x,%x,%x,%x,%x] S=[%x,%x,%x,%x]\n", T0, T1, H0, H1, H2, H3, H4, H5, H6, H7, S0, S1, S2, S3);
 
@@ -1394,7 +1406,7 @@ void lyra2(const ulong* in_dwords, ulong* out_dwords,__global ulong4* DMatrix)
 	for (int i = 0; i<12; i++) { round_lyra(state); } 
 
 
-	uint ps1 = (memshift * 3);
+	const uint ps1 = (memshift * 3);
 	//#pragma unroll 4
 	for (int i = 0; i < 4; i++)
 	{
@@ -1419,7 +1431,7 @@ void lyra2(const ulong* in_dwords, ulong* out_dwords,__global ulong4* DMatrix)
 		prev = i;
 	}
 
-	uint shift = (memshift * 4 * rowa);
+	const uint shift = (memshift * 4 * rowa);
 
 	for (int j = 0; j < 3; j++)
 		state[j] ^= (DMatrix)[j+shift];
@@ -1644,7 +1656,7 @@ __kernel void search(
 	block[19] = gid;
 
 	// Run hashimoto (result hash output to block)
-	hashimoto_vector(block, g_dag, DAG_ITEM_COUNT, height, DMatrix);
+	hashimoto_vector(block, g_dag, DAG_ITEM_COUNT, height, DMatrix); 
 
 	//printf("NONCE[%u] TARGET %08x Hashimoto(%u, %u) -> %08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n", gid, target, DAG_ITEM_COUNT*32, height, block[0], block[1], block[2], block[3], block[4], block[5], block[6], block[7]);
 

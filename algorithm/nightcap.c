@@ -3,6 +3,7 @@
 #include "config.h"
 #include "miner.h"
 #include "util.h"
+#include "algorithm.h"
 #include "algorithm/ethash.h"
 #include "algorithm/nightcap.h"
 #include "sph/sph_blake.h"
@@ -215,6 +216,23 @@ void test_hashimoto(uint32_t height)
 	printf("LightHashimoto(%u, %u) -> %08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n", full_size, height, res.result[0], res.result[1], res.result[2], res.result[3], res.result[4], res.result[5], res.result[6], res.result[7]);
 
 	cg_runlock(&EthCacheLock[idx]);
+}
+
+void precalc_nightcap_hash(dev_blk_ctx* blk, uint32_t *midstate, uint32_t *pdata)
+{
+	if (!opt_nc_blake_precalc)
+		return;
+	sph_blake256_context ctx_blake;  
+	uint32_t precalc_header[16]; 
+	memcpy(precalc_header, pdata, sizeof(precalc_header)); 
+	for (uint32_t i = 0; i < 16; i++) { precalc_header[i] = sph_bswap32(precalc_header[i]); }
+
+	sph_blake256_set_rounds(14);
+	sph_blake256_init(&ctx_blake); 
+	sph_blake256(&ctx_blake, precalc_header, 64);
+
+	// Copy blake state
+	memcpy(midstate, ctx_blake.H, sizeof(uint32_t) * 8); // occupies first 32 bytes
 }
 
 void nightcap_regenhash(struct work *work)

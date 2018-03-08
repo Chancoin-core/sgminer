@@ -167,6 +167,12 @@ static void append_nightcap_compiler_options(struct _build_kernel_data *data, st
   sprintf(buf, "%stc%lu", ((cgpu->lookup_gap > 0) ? "lg" : ""), (unsigned long)cgpu->thread_concurrency);
   strcat(data->binary_filename, buf);
 
+  if (opt_nc_blake_precalc)
+  {
+	  strcat(data->binary_filename, "pc");
+	  strcat(data->compiler_options, " -DPRECALC_BLAKE ");
+  }
+
   applog(LOG_DEBUG, "NIGHTCAP compiler options for %s : %s", cgpu->name, data->compiler_options);
 }
 
@@ -1359,7 +1365,6 @@ static const char* debug_print_nightcap_hash(const uint* hash)
 
 void test_hashimoto(uint32_t height);
 
-// TOFIX: properly adjust to nightcap
 static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_unused cl_uint threads)
 {
   cl_kernel *kernel;
@@ -1411,6 +1416,16 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
   fclose(fp);
   */
 #endif
+
+  // Precalc hash
+  uint32_t precalc_header[20];
+  if (opt_nc_blake_precalc)
+  {
+	  assert(blk->work->midstate_done);
+	  memcpy(precalc_header, blk->work->midstate, 32); // occupies first 32 bytes instead of encoded data
+	  memcpy(precalc_header + 16, work_data + 64, 16); // last 16 bytes are the same
+	  work_data = (uint8_t*)precalc_header;
+  }
 
   // Submit block header data
   status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, 80, work_data, 0, NULL, NULL);
@@ -1808,8 +1823,8 @@ static algorithm_settings_t algos[] = {
   { "ethash",     ALGO_ETHASH,   "", (1ULL << 32), (1ULL << 32), 1, 0, 0, 0xFF, 0xFFFF000000000000ULL, 0x00000000UL, 0, 128, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, ethash_regenhash, NULL, queue_ethash_kernel, gen_hash, append_ethash_compiler_options },
 
     // NOTE: might need to tweak these
-  { "nightcap",     ALGO_NIGHTCAP,   "",         1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, NULL, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
-  { "cloverhash",   ALGO_NIGHTCAP,   "nightcap", 1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, NULL, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
+  { "nightcap",     ALGO_NIGHTCAP,   "",         1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
+  { "cloverhash",   ALGO_NIGHTCAP,   "nightcap", 1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
 
   // Terminator (do not remove)
   { NULL, ALGO_UNK, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL }

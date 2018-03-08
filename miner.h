@@ -1144,6 +1144,9 @@ extern bool opt_luffa_parallel;
 extern int opt_hamsi_expand_big;
 extern bool opt_hamsi_short;
 
+// Nightcap opts
+extern bool opt_nc_blake_precalc;
+
 #if LOCK_TRACKING
 extern pthread_mutex_t lockstat_lock;
 #endif
