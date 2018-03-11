@@ -1363,7 +1363,200 @@ static const char* debug_print_nightcap_hash(const uint* hash)
 
 #endif
 
-void test_hashimoto(uint32_t height);
+void test_hashimoto(uint32_t height, uint32_t gid);
+
+static cl_int nightcap_generate_dag(_clState *clState, dev_blk_ctx *blk, cl_uint height_number, cl_uint epoch_number)
+{
+	cl_kernel *kernel;
+	unsigned int num = 0;
+	cl_int status = 0;
+	cl_ulong DAGSize = nightcap_get_full_size(height_number);
+	uint64_t DAGItems = (size_t)(DAGSize / sizeof(NightcapNode));
+	struct cgpu_info *cgpu = blk->work->thr ? blk->work->thr->cgpu : NULL; // see get_work()
+
+	// Regenerate the dag if neccesary
+	if (clState->EpochNumber != epoch_number)
+	{
+		clState->EpochNumber = epoch_number;
+		cl_ulong CacheSize = nightcap_get_cache_size(height_number);
+		cl_event DAGGenEvent;
+		uint8_t seedhash[32];
+		sph_blake256_context ctx_blake;
+		uint32_t idx = epoch_number % 2;
+
+		applog(LOG_INFO, "DAG being regenerated on %s", cgpu->name);
+		if (clState->EthCache)
+			clReleaseMemObject(clState->EthCache);
+		if (clState->DAG)
+			clReleaseMemObject(clState->DAG);
+
+		clState->DAG = clCreateBuffer(clState->context, CL_MEM_READ_WRITE, DAGSize, NULL, &status);
+		if (status != CL_SUCCESS) {
+			applog(LOG_ERR, "Error %d: Creating the DAG buffer.", status);
+			return(status);
+		}
+
+		clState->EthCache = clCreateBuffer(clState->context, CL_MEM_READ_ONLY, CacheSize, NULL, &status);
+
+		// calc seed hash here
+		memset(seedhash, '\0', sizeof(seedhash));
+		for (size_t i = 0; i < epoch_number; i++) {
+			sph_blake256_init(&ctx_blake);
+			sph_blake256(&ctx_blake, seedhash, 32);
+			sph_blake256_close(&ctx_blake, seedhash);
+		}
+
+		cg_ilock(&EthCacheLock[idx]);
+		bool update = (EthCache[idx] == NULL || *(uint32_t*)EthCache[idx] != epoch_number);
+		if (update) {
+			uint8_t* cachePtr;
+			cg_ulock(&EthCacheLock[idx]);
+
+			EthCache[idx] = (uint8_t*)realloc(EthCache[idx], (sizeof(uint8_t) * CacheSize) + 32); // NOTE: epoch is at the start
+			*(uint32_t*)EthCache[idx] = epoch_number;
+			cachePtr = EthCache[idx] + 32;
+			NightcapGenerateCache((uint32_t*)cachePtr, seedhash, CacheSize);
+
+			applog(LOG_INFO, "Generated DAG Cache");
+		}
+		else
+			cg_dlock(&EthCacheLock[idx]);
+
+		if (status == CL_SUCCESS) {
+			// Load cache, offset by epoch
+			status = clEnqueueWriteBuffer(clState->commandQueue, clState->EthCache, true, 0, sizeof(cl_uchar) * CacheSize, EthCache[idx] + 32, 0, NULL, NULL);
+		}
+
+		if (update)
+			cg_wunlock(&EthCacheLock[idx]);
+		else
+			cg_runlock(&EthCacheLock[idx]);
+
+		if (status != CL_SUCCESS) {
+			applog(LOG_ERR, "Error %d: Creating the cache buffer and/or writing to it.", status);
+			return(status);
+		}
+
+		cl_uint zero = 0;
+		cl_uint CacheSizeNodes = CacheSize / sizeof(NightcapNode);
+		size_t items = 1UL << 21;  // NOTE: this is the work unit we are using for dag
+
+											// Enqueue DAG gen kernel (multiple launches to prevent driver locks)
+		kernel = &clState->GenerateDAG;
+
+		for (size_t p = 0; status == 0 && p < DAGItems / items; p++)
+		{
+			// Set offset for our full items size workload
+			zero = (cl_uint)p * items;
+			num = 0;
+			CL_SET_ARG(zero);
+			CL_SET_ARG(clState->EthCache);
+			CL_SET_ARG(clState->DAG);
+			CL_SET_ARG(CacheSizeNodes);
+			//CL_SET_ARG(Isolate);
+#ifdef DEBUG_NIGHTCAP_DAG
+			applog(LOG_INFO, "Submitting DAG Kernel");
+#endif
+			status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->GenerateDAG, 1, NULL, &items, NULL, 0, NULL, &DAGGenEvent);
+
+#ifdef DEBUG_NIGHTCAP_DAG
+			if (status != CL_SUCCESS) {
+				applog(LOG_INFO, "DAG Submit Failed");
+			}
+			else {
+				applog(LOG_INFO, "DAG Submit Success");
+			}
+#endif
+
+			status |= clWaitForEvents(1, &DAGGenEvent);
+
+#ifdef DEBUG_NIGHTCAP_DAG
+			if (status != CL_SUCCESS) {
+				applog(LOG_INFO, "DAG Wait Failed");
+			}
+			else {
+				applog(LOG_INFO, "DAG Wait Success");
+			}
+#endif
+
+			applog(LOG_INFO, "Generating DAG %s %2.0f%%", cgpu->name, ((double)(zero + items) / DAGItems) * 100);
+		}
+
+#ifdef DEBUG_NIGHTCAP_DAG
+		applog(LOG_INFO, "Processing last DAG elements");
+#endif
+
+		// Last items..
+		if (status == 0 && DAGItems % items) {
+			// Work on our last items
+			// NOTE: could be simplified by just using one loop
+			items = DAGItems % items;
+			zero = (cl_uint)DAGItems - items;
+			num = 0;
+			CL_SET_ARG(zero);
+			CL_SET_ARG(clState->EthCache);
+			CL_SET_ARG(clState->DAG);
+			CL_SET_ARG(CacheSizeNodes);
+			//CL_SET_ARG(Isolate);
+			status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->GenerateDAG, 1, NULL, &items, NULL, 0, NULL, &DAGGenEvent);
+
+
+#ifdef DEBUG_NIGHTCAP_DAG
+			if (status != CL_SUCCESS) {
+				applog(LOG_INFO, "DAG Submit2 Failed");
+			}
+			else {
+				applog(LOG_INFO, "DAG Submit2 Success");
+			}
+#endif
+
+			status |= clWaitForEvents(1, &DAGGenEvent);
+
+
+#ifdef DEBUG_NIGHTCAP_DAG
+			if (status != CL_SUCCESS) {
+				applog(LOG_INFO, "DAG Wait2 Failed");
+			}
+			else {
+				applog(LOG_INFO, "DAG Wait2 Success");
+			}
+#endif
+			// DEBUG DUMP THE GENERATED DAG
+#ifdef DEBUG_NIGHTCAP_DAG
+			uint8_t *DAG_DEBUG = (uint8_t*)malloc(DAGSize);
+			status |= clEnqueueReadBuffer(clState->commandQueue, clState->DAG, true, 0, sizeof(cl_uchar) * DAGSize, DAG_DEBUG, 0, NULL, &DAGGenEvent);
+
+			if (status != CL_SUCCESS) {
+				applog(LOG_INFO, "DAG READ Failed");
+			}
+
+			status |= clWaitForEvents(1, &DAGGenEvent);
+
+			if (status != CL_SUCCESS) {
+				applog(LOG_INFO, "DAG READ EVENT Failed");
+			}
+
+			FILE* fp;
+			fp = fopen("generated_dag.dat", "wb");
+			fwrite(DAG_DEBUG, 1, DAGSize, fp);
+			fclose(fp);
+
+#endif
+			// DEBUG END
+
+			clReleaseEvent(DAGGenEvent);
+
+			if (status != CL_SUCCESS) {
+				applog(LOG_ERR, "Error %d: Setting args for the DAG kernel and/or executing it.", status);
+				return(status);
+			}
+			applog(LOG_NOTICE, "DAG ready on %s (%u MB)", cgpu->name, (unsigned)(DAGSize >> 20));
+			//exit(0); // DEBUG
+		}
+	}
+
+	return 0;
+}
 
 static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_unused cl_uint threads)
 {
@@ -1431,186 +1624,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
   status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, 80, work_data, 0, NULL, NULL);
 
   // Regenerate the dag if neccesary
-  if (clState->EpochNumber != epoch_number)
-  {
-    clState->EpochNumber = epoch_number;
-    cl_ulong CacheSize = nightcap_get_cache_size(height_number);
-    cl_event DAGGenEvent;
-    uint8_t seedhash[32];
-    sph_blake256_context ctx_blake;
-    uint32_t idx = epoch_number % 2;
-
-    applog(LOG_INFO, "DAG being regenerated on %s", cgpu->name);
-    if (clState->EthCache)
-      clReleaseMemObject(clState->EthCache);
-    if (clState->DAG)
-      clReleaseMemObject(clState->DAG);
-
-    clState->DAG = clCreateBuffer(clState->context, CL_MEM_READ_WRITE, DAGSize, NULL, &status);
-    if (status != CL_SUCCESS) {
-      applog(LOG_ERR, "Error %d: Creating the DAG buffer.", status);
-      return(status);
-    }
-
-    clState->EthCache = clCreateBuffer(clState->context, CL_MEM_READ_ONLY, CacheSize, NULL, &status);
-
-    // calc seed hash here
-    memset(seedhash, '\0', sizeof(seedhash));
-    for (size_t i = 0; i < epoch_number; i++) {
-      sph_blake256_init(&ctx_blake);
-      sph_blake256(&ctx_blake, seedhash, 32);
-      sph_blake256_close(&ctx_blake, seedhash);
-    }
-
-    cg_ilock(&EthCacheLock[idx]);
-    bool update = (EthCache[idx] == NULL || *(uint32_t*)EthCache[idx] != epoch_number);
-    if (update) {
-      uint8_t* cachePtr;
-      cg_ulock(&EthCacheLock[idx]);
-
-      EthCache[idx] = (uint8_t*)realloc(EthCache[idx], (sizeof(uint8_t) * CacheSize) + 32); // NOTE: epoch is at the start
-      *(uint32_t*)EthCache[idx] = epoch_number;
-      cachePtr = EthCache[idx] + 32;
-      NightcapGenerateCache((uint32_t*)cachePtr, seedhash, CacheSize);
-
-      applog(LOG_INFO, "Generated DAG Cache");
-    }
-    else
-      cg_dlock(&EthCacheLock[idx]);
-
-    if (status == CL_SUCCESS) {
-      // Load cache, offset by epoch
-      status = clEnqueueWriteBuffer(clState->commandQueue, clState->EthCache, true, 0, sizeof(cl_uchar) * CacheSize, EthCache[idx] + 32, 0, NULL, NULL);
-    }
-
-    if (update)
-      cg_wunlock(&EthCacheLock[idx]);
-    else
-      cg_runlock(&EthCacheLock[idx]);
-
-    if (status != CL_SUCCESS) {
-      applog(LOG_ERR, "Error %d: Creating the cache buffer and/or writing to it.", status);
-      return(status);
-    }
-
-    cl_uint zero = 0;
-    cl_uint CacheSizeNodes = CacheSize / sizeof(NightcapNode);
-    size_t items = 1UL << 21;  // NOTE: this is the work unit we are using for dag
-
-    // Enqueue DAG gen kernel (multiple launches to prevent driver locks)
-    kernel = &clState->GenerateDAG;
-
-    for (size_t p = 0; status == 0 && p < DAGItems / items; p++)
-    {
-      // Set offset for our full items size workload
-      zero = (cl_uint)p * items;
-      num = 0;
-      CL_SET_ARG(zero);
-      CL_SET_ARG(clState->EthCache);
-      CL_SET_ARG(clState->DAG);
-      CL_SET_ARG(CacheSizeNodes);
-      //CL_SET_ARG(Isolate);
-#ifdef DEBUG_NIGHTCAP_DAG
-      applog(LOG_INFO, "Submitting DAG Kernel");
-#endif
-      status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->GenerateDAG, 1, NULL, &items, NULL, 0, NULL, &DAGGenEvent);
-
-#ifdef DEBUG_NIGHTCAP_DAG
-      if (status != CL_SUCCESS) {
-        applog(LOG_INFO, "DAG Submit Failed");
-      }
-      else {
-        applog(LOG_INFO, "DAG Submit Success");
-      }
-#endif
-
-      status |= clWaitForEvents(1, &DAGGenEvent);
-
-#ifdef DEBUG_NIGHTCAP_DAG
-      if (status != CL_SUCCESS) {
-        applog(LOG_INFO, "DAG Wait Failed");
-      }
-      else {
-        applog(LOG_INFO, "DAG Wait Success");
-      }
-#endif
-
-      applog(LOG_INFO, "Generating DAG %s %2.0f%%", cgpu->name, ((double)(zero + items) / DAGItems) * 100);
-    }
-
-#ifdef DEBUG_NIGHTCAP_DAG
-    applog(LOG_INFO, "Processing last DAG elements");
-#endif
-
-    // Last items..
-    if (status == 0 && DAGItems % items) {
-      // Work on our last items
-      // NOTE: could be simplified by just using one loop
-      items = DAGItems % items;
-      zero = (cl_uint)DAGItems - items;
-      num = 0;
-      CL_SET_ARG(zero);
-      CL_SET_ARG(clState->EthCache);
-      CL_SET_ARG(clState->DAG);
-      CL_SET_ARG(CacheSizeNodes);
-      //CL_SET_ARG(Isolate);
-      status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->GenerateDAG, 1, NULL, &items, NULL, 0, NULL, &DAGGenEvent);
-
-
-#ifdef DEBUG_NIGHTCAP_DAG
-      if (status != CL_SUCCESS) {
-        applog(LOG_INFO, "DAG Submit2 Failed");
-      }
-      else {
-        applog(LOG_INFO, "DAG Submit2 Success");
-      }
-#endif
-
-      status |= clWaitForEvents(1, &DAGGenEvent);
-
-
-#ifdef DEBUG_NIGHTCAP_DAG
-      if (status != CL_SUCCESS) {
-        applog(LOG_INFO, "DAG Wait2 Failed");
-      }
-      else {
-        applog(LOG_INFO, "DAG Wait2 Success");
-      }
-#endif
-    }
-
-    // DEBUG DUMP THE GENERATED DAG
-#ifdef DEBUG_NIGHTCAP_DAG
-    uint8_t *DAG_DEBUG = (uint8_t*)malloc(DAGSize);
-    status |= clEnqueueReadBuffer(clState->commandQueue, clState->DAG, true, 0, sizeof(cl_uchar) * DAGSize, DAG_DEBUG, 0, NULL, &DAGGenEvent);
-
-    if (status != CL_SUCCESS) {
-      applog(LOG_INFO, "DAG READ Failed");
-    }
-
-    status |= clWaitForEvents(1, &DAGGenEvent);
-
-    if (status != CL_SUCCESS) {
-      applog(LOG_INFO, "DAG READ EVENT Failed");
-    }
-
-    FILE* fp;
-    fp = fopen("generated_dag.dat", "wb");
-    fwrite(DAG_DEBUG, 1, DAGSize, fp);
-    fclose(fp);
-
-#endif
-    // DEBUG END
-
-    clReleaseEvent(DAGGenEvent);
-
-    if (status != CL_SUCCESS) {
-      applog(LOG_ERR, "Error %d: Setting args for the DAG kernel and/or executing it.", status);
-      return(status);
-    }
-    applog(LOG_NOTICE, "DAG ready on %s (%u MB)", cgpu->name, (unsigned)(DAGSize >> 20)); 
-    //exit(0); // DEBUG
-  }
+  nightcap_generate_dag(clState, blk, height_number, epoch_number);
 
   num = 0;
   kernel = &clState->kernel;
@@ -1709,6 +1723,166 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
   CL_SET_ARG(le_target);              // target we are looking for (at end of generated hash)
 
   return(status);
+}
+
+//#define DEBUG_NIGHTCAP_HASH
+
+static cl_int queue_nightcap_split_kernel(_clState *clState, dev_blk_ctx *blk, __maybe_unused cl_uint threads)
+{
+	cl_kernel *kernel;
+	unsigned int num = 0;
+	cl_int status = 0;
+	cl_uint le_target;
+	cl_uint height_number = blk->work->HeightNumber;
+	cl_uint epoch_number = blk->work->EpochNumber;
+	cl_ulong DAGSize = nightcap_get_full_size(height_number);
+	uint64_t DAGItems = (size_t)(DAGSize / sizeof(NightcapNode));
+	struct cgpu_info *cgpu = blk->work->thr ? blk->work->thr->cgpu : NULL; // see get_work()
+	uint8_t* work_data = blk->work->data;
+
+	//static_assert(sizeof(NightcapNode) == 32);
+
+	if (blk->work->work_difficulty > blk->work->device_diff) {
+		// We have a little problem here, device difficulty has been ramped down too much while the 
+		// pool has suddenly sent us a more difficult share. In this case its better to work on the more difficult 
+		// target.
+		le_target = *(cl_uint *)(blk->work->target + 28); // target we should be looking for in kernel
+	}
+	else {
+		le_target = *(cl_uint *)(blk->work->device_target + 28); // target we should be looking for in kernel
+	}
+
+
+	//applog(LOG_INFO, "target=%s\n", debug_print_nightcap_hash((const uint*)(blk->work->device_target)));
+
+	uint32_t* mem_ptr = (uint32_t*)blk->work->device_target;// (uint32_t*)blk->work->device_target;
+																			  //applog(LOG_INFO, "HEIGHT %u TARGET INTS = %08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x", 
+																			  //    blk->work->HeightNumber,
+																			  //  *mem_ptr++, *mem_ptr++, *mem_ptr++, *mem_ptr++, 
+																			  //  *mem_ptr++, *mem_ptr++, *mem_ptr++, *mem_ptr++ );
+
+#ifdef DEBUG_NIGHTCAP_HASH
+																			  // Sample from a known block number
+	height_number = 25335;
+	epoch_number = height_number / 400;
+	DAGSize = nightcap_get_full_size(height_number);
+	DAGItems = (uint64_t)(DAGSize / sizeof(NightcapNode));
+
+	uint8_t test_block_to_hash[80];
+	memset(test_block_to_hash, '\0', sizeof(test_block_to_hash));
+	work_data = test_block_to_hash;
+
+	/*
+	// Load the test block file
+	FILE* fp = fopen("test_block.dat", "rb");
+	fread(test_block_to_hash, 1, 80, fp);
+	fclose(fp);
+	*/
+#endif
+
+	// Precalc hash
+	uint32_t precalc_header[20];
+	if (opt_nc_blake_precalc)
+	{
+		assert(blk->work->midstate_done);
+		memcpy(precalc_header, blk->work->midstate, 32); // occupies first 32 bytes instead of encoded data
+		memcpy(precalc_header + 16, work_data + 64, 16); // last 16 bytes are the same
+
+																		 // For 0x0 fill
+#ifdef DEBUG_NIGHTCAP_HASH
+		precalc_header[0] = 3049239289;
+		precalc_header[1] = 349162595;
+		precalc_header[2] = 3093058716;
+		precalc_header[3] = 3384023118;
+		precalc_header[4] = 1742718670;
+		precalc_header[5] = 703172683;
+		precalc_header[6] = 3583960910;
+		precalc_header[7] = 4205430355;
+#endif
+
+		work_data = (uint8_t*)precalc_header;
+	}
+
+	// Submit block header data
+	status = clEnqueueWriteBuffer(clState->commandQueue, clState->CLbuffer0, true, 0, 80, work_data, 0, NULL, NULL);
+
+	// Regenerate the dag if neccesary
+	nightcap_generate_dag(clState, blk, height_number, epoch_number);
+
+	//test_hashimoto(25335, 0);
+
+	num = 0;
+	kernel = &clState->kernel;
+
+	cl_ulong ItemsArg = DAGItems;
+	cl_uint HeightArg = height_number;
+
+	// search hashes(buffer1), header(CLBuffer0)
+	CL_SET_ARG(clState->buffer1);
+	CL_SET_ARG(clState->CLbuffer0);
+
+	kernel = clState->extra_kernels;
+
+	// search1 hashes(buffer1)
+	num = 0;
+	CL_SET_ARG_0(clState->buffer1);
+
+	// search2 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search3 hashes(buffer1), g_lyre_nodes(padbuffer8)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+	CL_SET_ARG_N(1, clState->padbuffer8);
+
+	// search4 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search5 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search6 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search7 hashes(buffer1) dag(DAG), DAG_ITEM_COUNT(ItemsArg), height(HeightArg)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+	CL_SET_ARG_N(1, clState->DAG);
+	CL_SET_ARG_N(2, ItemsArg);
+	CL_SET_ARG_N(3, HeightArg);
+
+	// search8 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search9 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search10 hashes(buffer1), g_lyre_nodes(padbuffer8)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+	CL_SET_ARG_N(1, clState->padbuffer8);
+
+	// search11 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search12 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search13 hashes(buffer1), g_output(outputBuffer), target(le_target)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+	CL_SET_ARG_N(1, clState->outputBuffer);
+	CL_SET_ARG_N(2, le_target);
+
+	return(status);
 }
 
 static algorithm_settings_t algos[] = {
@@ -1826,6 +2000,7 @@ static algorithm_settings_t algos[] = {
   { "nightcap",     ALGO_NIGHTCAP,   "",         1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
   { "cloverhash",   ALGO_NIGHTCAP,   "nightcap", 1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
 
+  { "nightcap_split",     ALGO_NIGHTCAP,   "",         1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 13, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_split_kernel, gen_hash, append_nightcap_compiler_options },
   // Terminator (do not remove)
   { NULL, ALGO_UNK, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL }
 };

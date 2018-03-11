@@ -65,6 +65,9 @@ static void lyra2re2_hash(const void* input, void* state, int length)
 	sph_blake256(&ctx_blake, input, length);
 	sph_blake256_close(&ctx_blake, hashA);
 
+	//printf("LightHashimoto post-blake8 -> %08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n", hashA[0], hashA[1], hashA[2], hashA[3], hashA[4], hashA[5], hashA[6], hashA[7]);
+
+
 	sph_keccak256_init(&ctx_keccak);
 	sph_keccak256(&ctx_keccak, hashA, 32);
 	sph_keccak256_close(&ctx_keccak, hashB);
@@ -167,6 +170,11 @@ static struct CHashimotoResult light_hashimoto(const uint8_t *blockToHash, const
 	uint32_t mix[MIX_BYTES / sizeof(uint32_t)];
 	uint32_t cmix[4];
 	lyra2re2_hash(blockToHash, (char*)hashedHeader, 80);
+
+	//printf("LightHashimoto(%u, %u post-lyra2re2) -> %08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n", full_size, height, hashedHeader[0], hashedHeader[1], hashedHeader[2], hashedHeader[3], hashedHeader[4], hashedHeader[5], hashedHeader[6], hashedHeader[7]);
+
+
+
 	for (uint64_t i = 0; i < mixhashes; i++) {
 		memcpy(mix + (i * (HASH_BYTES / sizeof(uint32_t))), hashedHeader, HASH_BYTES);
 	}
@@ -200,7 +208,7 @@ static struct CHashimotoResult light_hashimoto(const uint8_t *blockToHash, const
 	return result;
 }
 
-void test_hashimoto(uint32_t height)
+void test_hashimoto(uint32_t height, uint32_t gid)
 {
 	uint32_t idx = (height / 400) % 2;
 	uint32_t endiandata[20];
@@ -208,6 +216,7 @@ void test_hashimoto(uint32_t height)
 	uint64_t full_size = nightcap_get_full_size(height);
 
 	memset(endiandata, '\0', sizeof(endiandata));
+	endiandata[19] = gid;
 
 	cg_rlock(&EthCacheLock[idx]);
 
