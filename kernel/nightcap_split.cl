@@ -58,6 +58,7 @@ typedef union _Node
 
 typedef union _MixNodes {
 	uint values[16];
+	uint8 nodes8[2];
 	uint16 nodes16;
 } MixNodes;
 
@@ -1060,16 +1061,6 @@ __constant static const uint CUBEHASH_IV512[] = {
 #define LYRA_SCRATCHBUF_SIZE_ULONG4 (LYRA_SCRATCHBUF_SIZE / (32))
 #define memshift 3
 
-
-#if LYRA_WORKSIZE < 22
-#define LYRA_LOCAL
-#define LYRA_LOCAL_SIZE ((LYRA_WORKSIZE * 1536) / 4)
-#define LYRA_SCOPE __local
-#else
-#define LYRA_SCOPE __global
-#endif
-
-
 // opencl versions
 #define ROTL64(x,n) rotate(x,(ulong)n)
 #define ROTR64(x,n) rotate(x,(ulong)(64-n))
@@ -1077,6 +1068,9 @@ __constant static const uint CUBEHASH_IV512[] = {
 //#define ROTL64(x,n) SPH_ROTL64(x, n)
 //#define ROTR64(x,n) SPH_ROTR64(x, n)
 //#define SWAP32(x) sph_bswap32(x)
+
+
+#define LYRA_SCOPE __global
 
 
 /*One Round of the Blake2b's compression function*/
@@ -1114,54 +1108,31 @@ __constant static const uint CUBEHASH_IV512[] = {
 #define SPH_ULONG4(a, b, c, d) (ulong4)(a, b, c, d)
 
 
-inline void reduceDuplexf(ulong4* state , LYRA_SCOPE ulong4* DMatrix)
+inline void reduceDuplexf(ulong4 *state1, ulong4* state , __global ulong4* DMatrix)
 {
-
-	 ulong4 state1[3];
-	 const uint ps1 = 0;
-	 const uint ps2 = (memshift * 3 + memshift * 4); // 21  (84 bytes)
+	const uint ps1 = 0;
+	const uint ps2 = (memshift * 3 + memshift * 4);
 //#pragma unroll 4
-	 for (int i = 0; i < 4; i++)
-	 {
+	for (int i = 0; i < 4; i++)
+	{
 		 const uint s1 = ps1 + i*memshift;
 		 const uint s2 = ps2 - i*memshift;
 
 		 for (int j = 0; j < 3; j++)  state1[j] = (DMatrix)[j + s1];
-
 		 for (int j = 0; j < 3; j++)  state[j] ^= state1[j];
+
 		 round_lyra(state);
-		 for (int j = 0; j < 3; j++)  state1[j] ^= state[j]; // all these ops are done one-by-one
 
-		 for (int j = 0; j < 3; j++)  (DMatrix)[j + s2] = state1[j]; // copy will prob happen 4 ulongs at a time
-	 }
-
+		 for (int j = 0; j < 3; j++)  state1[j] ^= state[j];
+		 for (int j = 0; j < 3; j++)  (DMatrix)[j + s2] = state1[j];
+	}
 }
 
-// 128 bytes max when load=256. Thats 32 uints or 8 uint4's
-
-inline void reduceDuplexRowf(uint rowIn,uint rowInOut,uint rowOut,ulong4 * state, LYRA_SCOPE ulong4 * DMatrix)
+inline void reduceDuplexRowf(ulong4 *state1, ulong4* state2, uint rowIn,uint rowInOut,uint rowOut,ulong4 * state, __global ulong4 * DMatrix)
 {
-	ulong4 state1[3], state2[3];    // 96, 96  -> 48 regs min
 	const uint ps1 = (memshift * 4 * rowIn);
 	const uint ps2 = (memshift * 4 * rowInOut);
 	const uint ps3 = (memshift * 4 * rowOut);
-
-	/*
-
-		uint prev = 3;
-		for (uint i = 0; i<4; i++) {
-			rowa = state[0].x & 3;
-			reduceDuplexRowf(prev, rowa, i, state, DMatrix);
-			prev = i;
-
-		Called with: rowIn=3, rowInOut=0...4, rowOut=@(0...4)
-
-		ps1 = (3 * 4 * 3) = 36
-		ps2 = (3 * 4 * 0) = 0,12,24,36
-		ps3 = (3 * 4 * 0) = 0
-	*/
-
-
 
 	for (int i = 0; i < 4; i++)
 	{
@@ -1169,77 +1140,61 @@ inline void reduceDuplexRowf(uint rowIn,uint rowInOut,uint rowOut,ulong4 * state
 		const uint s2 = ps2 + i*memshift;
 		const uint s3 = ps3 + i*memshift;
 
-
-		// copy 96 bytes
-		for (int j = 0; j < 3; j++)  { state1[j] = (DMatrix)[j + s1]; }
-		// copy 96 bytes
-		for (int j = 0; j < 3; j++)  { state2[j] = (DMatrix)[j + s2]; }
-
-		for (int j = 0; j < 3; j++)  { state1[j] += state2[j]; }
-
-		for (int j = 0; j < 3; j++) {  state[j] ^= state1[j]; }
-
+		for (int j = 0; j < 3; j++)   state1[j] = (DMatrix)[j + s1];
+		for (int j = 0; j < 3; j++)   state2[j] = (DMatrix)[j + s2];
+		for (int j = 0; j < 3; j++)   state1[j] += state2[j];
+		for (int j = 0; j < 3; j++)   state[j] ^= state1[j];
 
 		round_lyra(state);
 
 		((ulong*)state2)[0] ^= ((ulong*)state)[11];
-		for (int j = 0; j < 11; j++) {
+		for (int j = 0; j < 11; j++)
+		{
 			((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];
 		}
 
 		if (rowInOut != rowOut) {
-			for (int j = 0; j < 3; j++)
-				(DMatrix)[j + s2] = state2[j];
-			for (int j = 0; j < 3; j++)
-				(DMatrix)[j + s3] ^= state[j];
+			for (int j = 0; j < 3; j++) { (DMatrix)[j + s2] = state2[j]; }
+			for (int j = 0; j < 3; j++) { (DMatrix)[j + s3] ^= state[j]; }
+		} else {
+			for (int j = 0; j < 3; j++) { state2[j] ^= state[j]; }
+			for (int j = 0; j < 3; j++) { (DMatrix)[j + s2] = state2[j]; }
 		}
-		else {
-			for (int j = 0; j < 3; j++)
-				state2[j] ^= state[j];
-			for (int j = 0; j < 3; j++)
-				(DMatrix)[j + s2] = state2[j];
-		}
-
 	}
 }
 
+inline void reduceDuplexRowSetupf(ulong4 *state1, ulong4 *state2, uint rowIn, uint rowInOut, uint rowOut, ulong4 *state,  __global ulong4* DMatrix)
+{
+	 uint ps1 = (memshift * 4 * rowIn);
+	 uint ps2 = (memshift * 4 * rowInOut);
+	 uint ps3 = (memshift * 3 + memshift * 4 * rowOut);
 
+	 for (int i = 0; i < 4; i++)
+	 {
+		 uint s1 = ps1 + i*memshift;
+		 uint s2 = ps2 + i*memshift;
+		 uint s3 = ps3 - i*memshift;
 
+		 for (int j = 0; j < 3; j++)  state1[j] = (DMatrix)[j + s1];
 
-inline void reduceDuplexRowSetupf(uint rowIn, uint rowInOut, uint rowOut, ulong4 *state,  LYRA_SCOPE ulong4* DMatrix) {
+		 for (int j = 0; j < 3; j++)  state2[j] = (DMatrix)[j + s2];
+		 for (int j = 0; j < 3; j++) {
+			 ulong4 tmp = state1[j] + state2[j];
+			 state[j] ^= tmp;
+		 		 }
+		 round_lyra(state);
 
-	ulong4 state2[3], state1[3];
-	uint ps1 = (memshift * 4 * rowIn);
-	uint ps2 = (memshift * 4 * rowInOut);
-	uint ps3 = (memshift * 3 + memshift * 4 * rowOut);
+		 for (int j = 0; j < 3; j++) {
+			 state1[j] ^= state[j];
+			 (DMatrix)[j + s3] = state1[j];
+		 		 }
 
-	for (int i = 0; i < 4; i++)
-	{
-		const uint s1 = ps1 + i*memshift;
-		const uint s2 = ps2 + i*memshift;
-		const uint s3 = ps3 - i*memshift;
-
-		for (int j = 0; j < 3; j++)  state1[j] = (DMatrix)[j + s1];
-
-		for (int j = 0; j < 3; j++)  state2[j] = (DMatrix)[j + s2];
-		for (int j = 0; j < 3; j++) {
-			ulong4 tmp = state1[j] + state2[j];
-			state[j] ^= tmp;
-		}
-
-		round_lyra(state);
-
-		for (int j = 0; j < 3; j++) {
-			state1[j] ^= state[j];
-			(DMatrix)[j + s3] = state1[j];
-		}
-
-		((ulong*)state2)[0] ^= ((ulong*)state)[11];
-		for (int j = 0; j < 11; j++)
-			((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];
-		for (int j = 0; j < 3; j++)
-			(DMatrix)[j + s2] = state2[j];
-	}
+		 ((ulong*)state2)[0] ^= ((ulong*)state)[11];
+		 for (int j = 0; j < 11; j++)
+			 ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];
+		 for (int j = 0; j < 3; j++)
+			 (DMatrix)[j + s2] = state2[j];
+	 }
 }
 
 // END LYRA2 PREPROCESSOR MACROS
@@ -1611,7 +1566,7 @@ inline void cubehash32(__global const uint* in_words, __global uint* out_words)
 // run-of-the-mill lyra2
 inline void lyra2(__global const ulong* in_dwords, __global ulong* out_dwords,LYRA_SCOPE ulong4* DMatrix)
 {
-	ulong4 state[4]; // i.e. 32 uints
+	ulong4 state[4];
 
 	state[0].x = in_dwords[0]; //password
 	state[0].y = in_dwords[1]; //password
@@ -1639,17 +1594,19 @@ inline void lyra2(__global const ulong* in_dwords, __global ulong* out_dwords,LY
 		round_lyra(state);
 	}
 
-	reduceDuplexf(state,DMatrix);
+	ulong4 state1[3];
+	reduceDuplexf(state1, state,DMatrix);
 
-	reduceDuplexRowSetupf(1, 0, 2, state,DMatrix);
-	reduceDuplexRowSetupf(2, 1, 3, state,DMatrix);
+	ulong4 state2[3];
+	reduceDuplexRowSetupf(state1, state2, 1, 0, 2, state,DMatrix);
+	reduceDuplexRowSetupf(state1, state2, 2, 1, 3, state,DMatrix);
 
-	uint prev = 3;
+
 	uint rowa;
-
+	uint prev = 3;
 	for (uint i = 0; i<4; i++) {
 		rowa = state[0].x & 3;
-		reduceDuplexRowf(prev, rowa, i, state, DMatrix);
+		reduceDuplexRowf(state1, state2,prev, rowa, i, state, DMatrix);
 		prev = i;
 	}
 
@@ -1664,6 +1621,31 @@ inline void lyra2(__global const ulong* in_dwords, __global ulong* out_dwords,LY
 	//////////////////////////////////////
 
 	for (int i = 0; i<4; i++) {out_dwords[i] = ((ulong*)state)[i];} 
+}
+
+// Perform header mix, outputting the mix hash
+inline uint4 hashimoto_mix(uint* headerHash, __global const uint16 *dag, const ulong n)
+{
+	const ulong mixhashes = MIX_BYTES / HASH_BYTES;    // 2
+	MixNodes mix;                  // 64 bytes
+	mix.nodes8[0] = mix.nodes8[1] = ((uint8*)headerHash)[0];
+	uint header_int = mix.values[0];
+	
+	for (uint i = 0; i < ACCESSES; i++) {
+		// Pick a dag index to mix with
+		const uint p = fnv(i ^ header_int, mix.values[i % 16]) % (n / mixhashes);
+
+		// Mix in mixer. Note dag access is at most aligned to 64 bytes
+		mix.nodes16 *= FNV_PRIME;
+		mix.nodes16 ^= dag[p];
+	}
+	
+	uint4 mixhash;
+	mixhash[0] = fnv(fnv(fnv(mix.values[0],  mix.values[0 + 1]),  mix.values[0 + 2]),  mix.values[0 + 3]);
+	mixhash[1] = fnv(fnv(fnv(mix.values[4],  mix.values[4 + 1]),  mix.values[4 + 2]),  mix.values[4 + 3]);
+	mixhash[2] = fnv(fnv(fnv(mix.values[8],  mix.values[8 + 1]),  mix.values[8 + 2]),  mix.values[8 + 3]);
+	mixhash[3] = fnv(fnv(fnv(mix.values[12], mix.values[12 + 1]), mix.values[12 + 2]), mix.values[12 + 3]);
+	return mixhash;
 }
 
 #define HASH_WORDS 8
@@ -1715,13 +1697,7 @@ __kernel void search3(
 	const uint hash_output_idx = gid;// - get_global_offset(0);
 	 __global hash32_t *hash = (__global hash32_t *)(hashes + ((gid % MAX_GLOBAL_THREADS)));
 	
-	#ifndef LYRA_LOCAL
 	__global ulong4 *DMatrix = (__global ulong4 *)(g_lyre_nodes + (LYRA_SCRATCHBUF_SIZE_ULONG4 * (hash_output_idx % MAX_GLOBAL_THREADS)));
-	#else
-	const uint local_lyra_offset = get_local_id(0);// - get_global_offset(0);
-	__local uint lyra_work[LYRA_LOCAL_SIZE];//(LYRA_SCRATCHBUF_SIZE * 21) / 4];
-	__local ulong4 *DMatrix = (__local ulong4 *)(((__local ulong4*)lyra_work) + (LYRA_SCRATCHBUF_SIZE_ULONG4 * (local_lyra_offset % LYRA_WORKSIZE)));
-	#endif
 
     lyra2(hash->h8, hash->h8, DMatrix);
 }
@@ -1777,33 +1753,12 @@ __kernel void search7(
 
     // Mix
     {
-		const ulong mixhashes = MIX_BYTES / HASH_BYTES;    // 2
-		MixNodes mix;                  // 64 bytes
-		
-		//if (nonce_debug == 0) printf("nonce(%u) -> %08x%08x%08x%08x%08x%08x%08x%08x\n", nonce_debug, blockToHash[0], blockToHash[1], blockToHash[2], blockToHash[3], blockToHash[4], blockToHash[5], blockToHash[6], blockToHash[7]);
-
-		mix.nodes16 = (uint16)(blockToHash[0], blockToHash[1], blockToHash[2], blockToHash[3],
-			blockToHash[4], blockToHash[5], blockToHash[6], blockToHash[7],
-			blockToHash[0], blockToHash[1], blockToHash[2], blockToHash[3],
-			blockToHash[4], blockToHash[5], blockToHash[6], blockToHash[7]);
-
-
-		for (uint i = 0; i < ACCESSES; i++) {
-			// Pick a dag index to mix with
-			const uint p = fnv(i ^ blockToHash[0], mix.values[i % 16]) % (DAG_ITEM_COUNT / mixhashes);// * mixhashes;
-
-			// Mix in mixer. Note dag access is at most aligned to 64 bytes
-			mix.nodes16 *= FNV_PRIME;
-			mix.nodes16 ^= dag[p];
-		}
-
-		// cmix -> result.cmix. Also goes at end of header.
+		uint4 mixHash = hashimoto_mix(blockToHash, dag, DAG_ITEM_COUNT);
 		blockToHash[8] = height;
-		
-		blockToHash[9] = fnv(fnv(fnv(mix.values[0], mix.values[0 + 1]), mix.values[0 + 2]), mix.values[0 + 3]);
-		blockToHash[10] = fnv(fnv(fnv(mix.values[4], mix.values[4 + 1]), mix.values[4 + 2]), mix.values[4 + 3]);
-		blockToHash[11] = fnv(fnv(fnv(mix.values[8], mix.values[8 + 1]), mix.values[8 + 2]), mix.values[8 + 3]);
-		blockToHash[12] = fnv(fnv(fnv(mix.values[12], mix.values[12 + 1]), mix.values[12 + 2]), mix.values[12 + 3]);
+		blockToHash[9] = mixHash[0];
+		blockToHash[10] = mixHash[1];
+		blockToHash[11] = mixHash[2];
+		blockToHash[12] = mixHash[3];
 	}
 
 	blake52(blockToHash, hash->h4);
@@ -1841,14 +1796,8 @@ __kernel void search10(
 	const uint hash_output_idx = gid;// - get_global_offset(0);
 	 __global hash32_t *hash = (__global hash32_t *)(hashes + ((gid % MAX_GLOBAL_THREADS)));
 	
-	#ifndef LYRA_LOCAL
 	__global ulong4 *DMatrix = (__global ulong4 *)(g_lyre_nodes + (LYRA_SCRATCHBUF_SIZE_ULONG4 * (hash_output_idx % MAX_GLOBAL_THREADS)));
-	#else
-	const uint local_lyra_offset = get_local_id(0);// - get_global_offset(0);
-	__local uint lyra_work[LYRA_LOCAL_SIZE];//(LYRA_SCRATCHBUF_SIZE * 21) / 4];
-	__local ulong4 *DMatrix = (__local ulong4 *)(((__local ulong4*)lyra_work) + (LYRA_SCRATCHBUF_SIZE_ULONG4 * (local_lyra_offset % LYRA_WORKSIZE)));
-	#endif
-
+	
     lyra2(hash->h8, hash->h8, DMatrix);
 }
 

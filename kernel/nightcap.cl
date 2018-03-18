@@ -567,7 +567,7 @@ p6 += p7; p7 = SPH_ROTL64(p7, ROT256[ROT][3]);  p7 ^= p6; \
 #define rs7(x) SPH_ROTL32((x), 27)
 
 /* Message expansion function 1 */
-uint expand32_1(int i, const uint *M32, const uint *H, const uint *Q)
+inline uint expand32_1(int i, const uint *M32, const uint *H, const uint *Q)
 {
 
 	return (ss1(Q[i - 16]) + ss2(Q[i - 15]) + ss3(Q[i - 14]) + ss0(Q[i - 13])
@@ -579,7 +579,7 @@ uint expand32_1(int i, const uint *M32, const uint *H, const uint *Q)
 }
 
 /* Message expansion function 2 */
-uint expand32_2(int i, const uint *M32, const uint *H, const uint *Q)
+inline uint expand32_2(int i, const uint *M32, const uint *H, const uint *Q)
 {
 
 	return (Q[i - 16] + rs1(Q[i - 15]) + Q[i - 14] + rs2(Q[i - 13])
@@ -590,9 +590,9 @@ uint expand32_2(int i, const uint *M32, const uint *H, const uint *Q)
 
 }
 
-void Compression256(const uint *M32, uint *H)
+inline void Compression256(const uint *M32, uint *H, uint *Q)
 {
-	uint XL32, XH32, Q[32];
+	uint XL32, XH32;
 
 
 	Q[0] = (M32[5] ^ H[5]) - (M32[7] ^ H[7]) + (M32[10] ^ H[10]) + (M32[13] ^ H[13]) + (M32[14] ^ H[14]);
@@ -1340,8 +1340,11 @@ inline void bmw32(const uint* in_words, uint* out_words)
 	message[14]=0x100;
 	message[15]=0;
 
-	Compression256(message, dh);
-	Compression256(dh, final_s);
+	{
+		uint Q[32];
+		Compression256(message, dh, Q);
+		Compression256(dh, final_s, Q);
+	}
 
 	#pragma unroll
 	for (int i=8; i<16; i++) {
@@ -1380,8 +1383,11 @@ inline uint bmw32_to_target(const uint* in_words)
 	message[14]=0x100;
 	message[15]=0;
 
-	Compression256(message, dh);
-	Compression256(dh, final_s);
+	{
+		uint Q[32];
+		Compression256(message, dh, Q);
+		Compression256(dh, final_s, Q);
+	}
 
 	return final_s[15];
 }
@@ -1418,8 +1424,12 @@ inline void bmw32_to_global(const uint* in_words, __global uint* out_words)
 	message[14]=0x100;
 	message[15]=0;
 
-	Compression256(message, dh);
-	Compression256(dh, final_s);
+	{
+		uint Q[32];
+		Compression256(message, dh, Q);
+		Compression256(dh, final_s, Q);
+	}
+	
 
 	#pragma unroll
 	for (int i=8; i<16; i++) {

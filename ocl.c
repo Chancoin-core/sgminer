@@ -1026,14 +1026,17 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
       }
     }
 	 else if (algorithm->type == ALGO_NIGHTCAP) {
-#ifdef DEBUG_NIGHTCAP_HASH
-		 // need additionnal buffers
-		 clState->buffer1 = clCreateBuffer(clState->context, CL_MEM_READ_WRITE, buf1size, NULL, &status);
-		 if (status != CL_SUCCESS && !clState->buffer1) {
-			 applog(LOG_DEBUG, "Error %d: clCreateBuffer (buffer1), decrease TC or increase LG", status);
-			 return NULL;
-		 }
+#ifndef DEBUG_NIGHTCAP_HASH
+       if (algorithm->n_extra_kernels > 0)
 #endif
+       {
+         // need additionnal buffers
+         clState->buffer1 = clCreateBuffer(clState->context, CL_MEM_READ_WRITE, buf1size, NULL, &status);
+         if (status != CL_SUCCESS && !clState->buffer1) {
+           applog(LOG_DEBUG, "Error %d: clCreateBuffer (buffer1), decrease TC or increase LG", status);
+           return NULL;
+         }
+       }
 	 }
     else {
       clState->buffer1 = clCreateBuffer(clState->context, CL_MEM_READ_WRITE, bufsize, NULL, &status); // we don't need that much just tired...
