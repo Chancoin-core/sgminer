@@ -758,6 +758,16 @@ static inline void flip80(void *dest_p, const void *src_p)
     dest[i] = swab32(src[i]);
 }
 
+static inline void flip100(void *dest_p, const void *src_p)
+{
+	uint32_t *dest = (uint32_t *)dest_p;
+	const uint32_t *src = (uint32_t *)src_p;
+	int i;
+
+	for (i = 0; i < 25; i++)
+		dest[i] = swab32(src[i]);
+}
+
 static inline void flip128(void *dest_p, const void *src_p)
 {
   uint32_t *dest = (uint32_t *)dest_p;
@@ -1475,7 +1485,11 @@ struct pool {
   uint32_t gbt_bits;
   unsigned char *txn_hashes;
   size_t gbt_txns;
+  char *txn_data;
   size_t coinbase_len;
+
+  unsigned char pk_script[25];
+  size_t pk_script_size;
 
   /* Shared by both stratum & GBT */
   unsigned char *coinbase;
@@ -1541,6 +1555,7 @@ struct work {
 
   bool    gbt;
   char    *coinbase;
+  char    *txn_data;
   int   gbt_txns;
 
   unsigned int  work_block;

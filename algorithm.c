@@ -1375,7 +1375,7 @@ static cl_int nightcap_generate_dag(_clState *clState, dev_blk_ctx *blk, cl_uint
 	struct cgpu_info *cgpu = blk->work->thr ? blk->work->thr->cgpu : NULL; // see get_work()
 
 	// Regenerate the dag if neccesary
-	if (clState->EpochNumber != epoch_number)
+	if (clState->EpochNumber != epoch_number || !clState->EthCache)
 	{
 		clState->EpochNumber = epoch_number;
 		cl_ulong CacheSize = nightcap_get_cache_size(height_number);
@@ -1563,7 +1563,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
   cl_kernel *kernel;
   unsigned int num = 0;
   cl_int status = 0;
-  cl_uint le_target;
+  cl_ulong le_target;
   cl_uint height_number = blk->work->HeightNumber;
   cl_uint epoch_number = blk->work->EpochNumber;
   cl_ulong DAGSize = nightcap_get_full_size(height_number);
@@ -1577,9 +1577,9 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
     // We have a little problem here, device difficulty has been ramped down too much while the 
     // pool has suddenly sent us a more difficult share. In this case its better to work on the more difficult 
     // target.
-    le_target = *(cl_uint *)(blk->work->target + 28); // target we should be looking for in kernel
+    le_target = *(cl_ulong *)(blk->work->target + 24); // target we should be looking for in kernel
   } else {
-    le_target = *(cl_uint *)(blk->work->device_target + 28); // target we should be looking for in kernel
+    le_target = *(cl_ulong *)(blk->work->device_target + 24); // target we should be looking for in kernel
   }
 
 
@@ -1599,7 +1599,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
   DAGItems = (uint64_t)(DAGSize / sizeof(NightcapNode));
 
   uint8_t test_block_to_hash[80];
-  memset(test_block_to_hash, '\0', sizeof(test_block_to_hash));
+  memset(test_block_to_hash, 255, sizeof(test_block_to_hash));
   work_data = test_block_to_hash;
 
   /*
@@ -1657,7 +1657,7 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
 #ifndef DEBUG_NIGHTCAP_HASH_HASH_OUTPUT
     CL_SET_ARG(le_target);              // number of dag items 
 #endif
-
+	 
     {
       status |= clEnqueueNDRangeKernel(clState->commandQueue, clState->kernel, 1, &offset_items, &items, NULL, 0, NULL, &HashGenEvent);
 
@@ -1683,18 +1683,21 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
       status |= clEnqueueReadBuffer(clState->commandQueue, clState->buffer1, true, 0, 256 * 32 * sizeof(uint32_t), HASH_DEBUG, 0, NULL, &HashGenEvent);
 
       if (status != CL_SUCCESS) {
-        applog(LOG_INFO, "HASH READ Failed");
+        applog(LOG_INFO, "HASH READ Failed"); 
       }
 
       status |= clWaitForEvents(1, &HashGenEvent);
 
       if (status != CL_SUCCESS) {
-        applog(LOG_INFO, "HASH READ EVENT Failed");
+        applog(LOG_INFO, "HASH READ EVENT Failed"); 
       }
 
 #ifdef DEBUG_NIGHTCAP_HASH_HASH_OUTPUT
+		applog(LOG_INFO, "HASHES FOLLOW...");
       for (uint32_t i = 0; i < 256; i++) { 
         applog(LOG_INFO, "HASH[%u] == %s", i - offset_items, debug_print_nightcap_hash(&HASH_DEBUG[i * 8]));
+		  test_hashimoto(height_number, i);
+		  applog(LOG_INFO, "----");
       }
 
 #else
@@ -1707,8 +1710,8 @@ static cl_int queue_nightcap_kernel(_clState *clState, dev_blk_ctx *blk, __maybe
 #endif
 
     }
-
-    test_hashimoto(height_number);  
+	  
+    test_hashimoto(height_number, 0); 
 
     exit(0);
   }
@@ -1732,7 +1735,7 @@ static cl_int queue_nightcap_split_kernel(_clState *clState, dev_blk_ctx *blk, _
 	cl_kernel *kernel;
 	unsigned int num = 0;
 	cl_int status = 0;
-	cl_uint le_target;
+	cl_ulong le_target;
 	cl_uint height_number = blk->work->HeightNumber;
 	cl_uint epoch_number = blk->work->EpochNumber;
 	cl_ulong DAGSize = nightcap_get_full_size(height_number);
@@ -1746,10 +1749,10 @@ static cl_int queue_nightcap_split_kernel(_clState *clState, dev_blk_ctx *blk, _
 		// We have a little problem here, device difficulty has been ramped down too much while the 
 		// pool has suddenly sent us a more difficult share. In this case its better to work on the more difficult 
 		// target.
-		le_target = *(cl_uint *)(blk->work->target + 28); // target we should be looking for in kernel
+		le_target = *(cl_ulong *)(blk->work->target + 24); // target we should be looking for in kernel
 	}
 	else {
-		le_target = *(cl_uint *)(blk->work->device_target + 28); // target we should be looking for in kernel
+		le_target = *(cl_ulong *)(blk->work->device_target + 24); // target we should be looking for in kernel
 	}
 
 
@@ -1778,10 +1781,10 @@ static cl_int queue_nightcap_split_kernel(_clState *clState, dev_blk_ctx *blk, _
 	fread(test_block_to_hash, 1, 80, fp);
 	fclose(fp);
 	*/
-#endif
+#endif  
 
-	// Precalc hash
-	uint32_t precalc_header[20];
+	// Precalc hash  
+	uint32_t precalc_header[20]; 
 	if (opt_nc_blake_precalc)
 	{
 		assert(blk->work->midstate_done);
@@ -1816,10 +1819,12 @@ static cl_int queue_nightcap_split_kernel(_clState *clState, dev_blk_ctx *blk, _
 
 	cl_ulong ItemsArg = DAGItems;
 	cl_uint HeightArg = height_number;
+	cl_uint Isolate = 1;
 
 	// search hashes(buffer1), header(CLBuffer0)
 	CL_SET_ARG(clState->buffer1);
 	CL_SET_ARG(clState->CLbuffer0);
+	CL_SET_ARG(Isolate);
 
 	kernel = clState->extra_kernels;
 
@@ -1827,56 +1832,49 @@ static cl_int queue_nightcap_split_kernel(_clState *clState, dev_blk_ctx *blk, _
 	num = 0;
 	CL_SET_ARG_0(clState->buffer1);
 
-	// search2 hashes(buffer1)
-	num = 0;
-	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
-
-	// search3 hashes(buffer1), g_lyre_nodes(padbuffer8)
+	// search2 hashes(buffer1), g_lyre_nodes(padbuffer8)
 	num = 0;
 	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
 	CL_SET_ARG_N(1, clState->padbuffer8);
 
-	// search4 hashes(buffer1)
+	// search3 hashes(buffer1)
 	num = 0;
 	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search4 hashes(buffer1)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);  
 
 	// search5 hashes(buffer1)
 	num = 0;
 	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
-
-	// search6 hashes(buffer1)
+	  
+	// search6 hashes(buffer1) dag(DAG), DAG_ITEM_COUNT(ItemsArg), height(HeightArg)
 	num = 0;
-	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
-
-	// search7 hashes(buffer1) dag(DAG), DAG_ITEM_COUNT(ItemsArg), height(HeightArg)
-	num = 0;
-	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1); 
 	CL_SET_ARG_N(1, clState->DAG);
 	CL_SET_ARG_N(2, ItemsArg);
 	CL_SET_ARG_N(3, HeightArg);
+	CL_SET_ARG_N(4, Isolate);
 
-	// search8 hashes(buffer1)
+	// search7 hashes(buffer1)
 	num = 0;
 	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+
+	// search8 hashes(buffer1), g_lyre_nodes(padbuffer8)
+	num = 0;
+	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
+	CL_SET_ARG_N(1, clState->padbuffer8);
 
 	// search9 hashes(buffer1)
 	num = 0;
 	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
 
-	// search10 hashes(buffer1), g_lyre_nodes(padbuffer8)
-	num = 0;
-	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
-	CL_SET_ARG_N(1, clState->padbuffer8);
-
-	// search11 hashes(buffer1)
+	// search10 hashes(buffer1)
 	num = 0;
 	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
 
-	// search12 hashes(buffer1)
-	num = 0;
-	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
-
-	// search13 hashes(buffer1), g_output(outputBuffer), target(le_target)
+	// search11 hashes(buffer1), g_output(outputBuffer), target(le_target)
 	num = 0;
 	CL_NEXTKERNEL_SET_ARG_0(clState->buffer1);
 	CL_SET_ARG_N(1, clState->outputBuffer);
@@ -1999,8 +1997,9 @@ static algorithm_settings_t algos[] = {
     // NOTE: might need to tweak these
   { "nightcap",     ALGO_NIGHTCAP,   "",         1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
   { "cloverhash",   ALGO_NIGHTCAP,   "nightcap", 1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
+  //{ "barrycap",   ALGO_NIGHTCAP,   "", 1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 0, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_kernel, gen_hash, append_nightcap_compiler_options },
 
-  { "nightcap_split",     ALGO_NIGHTCAP,   "",         1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 13, -1, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_split_kernel, gen_hash, append_nightcap_compiler_options },
+  { "nightcap_split",     ALGO_NIGHTCAP,   "",         1, 1, 1, 0, 0, 0xFF, 0x0000ffffUL, 0x0000ffffUL, 11, -1, 0/*CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE*/, nightcap_regenhash, precalc_nightcap_hash, queue_nightcap_split_kernel, gen_hash, append_nightcap_compiler_options },
   // Terminator (do not remove)
   { NULL, ALGO_UNK, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL }
 };

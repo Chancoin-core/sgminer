@@ -115,6 +115,8 @@ bool opt_restart = true;
 
 int opt_vote = 0;
 
+static char coinbase_sig[101] = { 0 };
+
 /*****************************************
  * Xn Algorithm options
  *****************************************/
@@ -193,6 +195,9 @@ double opt_diff_mult = 0.0;
 
 char *opt_kernel_path;
 char *sgminer_path;
+
+uint32_t opt_start_nonce=0;
+bool opt_rand_nonce=false;
 
 #define QUIET (opt_quiet || opt_realquiet)
 
@@ -505,7 +510,7 @@ static void sharelog(const char*disposition, const struct work*work)
 
 static char *getwork_req = "{\"method\": \"getwork\", \"params\": [], \"id\":0}\n";
 
-static char *gbt_req = "{\"id\": 0, \"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": [\"coinbasetxn\", \"workid\", \"coinbase/append\"]}]}\n";
+static char *gbt_req = "{\"id\": 0, \"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": [\"coinbasetxn\", \"coinbasevalue\", \"workid\", \"coinbase/append\"]}]}\n";
 
 /* Adjust all the pools' quota to the greatest common denominator after a pool
  * has been added or the quotas changed. */
@@ -659,6 +664,11 @@ char *set_int_range(const char *arg, int *i, int min, int max)
     return "Value out of range";
 
   return NULL;
+}
+
+char *set_int_0_to_max(const char *arg, int *i)
+{
+	return set_int_range(arg, i, 0, 0xFFFFFFFF);
 }
 
 char *set_int_0_to_9999(const char *arg, int *i)
@@ -1311,6 +1321,28 @@ static char *set_api_mcast_addr(const char *arg)
   return NULL;
 }
 
+static char *opt_set_coinbase_addr(const char *arg)
+{
+	struct pool *pool = get_current_pool();
+
+	pool->pk_script_size = address_to_script(pool->pk_script, 25, arg);
+	if (!pool->pk_script_size) {
+		fprintf(stderr, "invalid address -- '%s'\n", arg);
+		//show_usage_and_exit(1);
+	}
+	return NULL;
+}
+
+static char *opt_set_coinbase_sig(const char *arg)
+{
+	if (strlen(arg) + 1 > sizeof(coinbase_sig)) {
+		fprintf(stderr, "coinbase signature too long\n");
+		return NULL;
+	}
+	strcpy(coinbase_sig, arg);
+	return NULL;
+}
+
 static char *set_api_mcast_code(const char *arg)
 {
   opt_set_charp(arg, &opt_api_mcast_code);
@@ -1345,86 +1377,102 @@ char *set_difficulty_multiplier(char *arg)
 /* These options are available from config file or commandline */
 struct opt_table opt_config_table[] = {
   OPT_WITH_ARG("--algorithm|--kernel|-k",
-         set_default_algorithm, NULL, NULL,
-         "Set mining algorithm and most common defaults, default: scrypt"),
+			set_default_algorithm, NULL, NULL,
+			"Set mining algorithm and most common defaults, default: scrypt"),
   OPT_WITH_ARG("--api-allow",
-         set_api_allow, NULL, NULL,
-         "Allow API access only to the given list of [G:]IP[/Prefix] addresses[/subnets]"),
+			set_api_allow, NULL, NULL,
+			"Allow API access only to the given list of [G:]IP[/Prefix] addresses[/subnets]"),
   OPT_WITH_ARG("--api-description",
-         set_api_description, NULL, NULL,
-         "Description placed in the API status header, default: sgminer version"),
+			set_api_description, NULL, NULL,
+			"Description placed in the API status header, default: sgminer version"),
   OPT_WITH_ARG("--api-groups",
-         set_api_groups, NULL, NULL,
-         "API one letter groups G:cmd:cmd[,P:cmd:*...] defining the cmds a groups can use"),
+			set_api_groups, NULL, NULL,
+			"API one letter groups G:cmd:cmd[,P:cmd:*...] defining the cmds a groups can use"),
   OPT_WITHOUT_ARG("--api-listen",
-      opt_set_bool, &opt_api_listen,
-      "Enable API, default: disabled"),
+		opt_set_bool, &opt_api_listen,
+		"Enable API, default: disabled"),
   OPT_WITHOUT_ARG("--api-mcast",
-      opt_set_bool, &opt_api_mcast,
-      "Enable API Multicast listener, default: disabled"),
+		opt_set_bool, &opt_api_mcast,
+		"Enable API Multicast listener, default: disabled"),
   OPT_WITH_ARG("--api-mcast-addr",
-     set_api_mcast_addr, NULL, NULL,
-     "API Multicast listen address"),
+	  set_api_mcast_addr, NULL, NULL,
+	  "API Multicast listen address"),
   OPT_WITH_ARG("--api-mcast-code",
-     set_api_mcast_code, NULL, NULL,
-     "Code expected in the API Multicast message, don't use '-'"),
+	  set_api_mcast_code, NULL, NULL,
+	  "Code expected in the API Multicast message, don't use '-'"),
   OPT_WITH_ARG("--api-mcast-des",
-     set_api_mcast_des, NULL, NULL,
-     "Description appended to the API Multicast reply, default: ''"),
+	  set_api_mcast_des, NULL, NULL,
+	  "Description appended to the API Multicast reply, default: ''"),
   OPT_WITH_ARG("--api-mcast-port",
-     set_int_1_to_65535, opt_show_intval, &opt_api_mcast_port,
-     "API Multicast listen port"),
+	  set_int_1_to_65535, opt_show_intval, &opt_api_mcast_port,
+	  "API Multicast listen port"),
   OPT_WITHOUT_ARG("--api-network",
-      opt_set_bool, &opt_api_network,
-      "Allow API (if enabled) to listen on/for any address, default: only 127.0.0.1"),
+		opt_set_bool, &opt_api_network,
+		"Allow API (if enabled) to listen on/for any address, default: only 127.0.0.1"),
   OPT_WITH_ARG("--api-port",
-      set_int_1_to_65535, opt_show_intval, &opt_api_port,
-      "Port number of miner API"),
+		set_int_1_to_65535, opt_show_intval, &opt_api_port,
+		"Port number of miner API"),
 #ifdef HAVE_ADL
   OPT_WITHOUT_ARG("--auto-fan",
-      opt_set_bool, &opt_autofan,
-      "Automatically adjust all GPU fan speeds to maintain a target temperature"),
+		opt_set_bool, &opt_autofan,
+		"Automatically adjust all GPU fan speeds to maintain a target temperature"),
   OPT_WITHOUT_ARG("--auto-gpu",
-      opt_set_bool, &opt_autoengine,
-      "Automatically adjust all GPU engine clock speeds to maintain a target temperature"),
+		opt_set_bool, &opt_autoengine,
+		"Automatically adjust all GPU engine clock speeds to maintain a target temperature"),
 #endif
   OPT_WITHOUT_ARG("--balance",
-      set_balance, &pool_strategy,
-      "Change multipool strategy from failover to even share balance"),
+		set_balance, &pool_strategy,
+		"Change multipool strategy from failover to even share balance"),
   OPT_WITHOUT_ARG("--blake-compact",
-      opt_set_bool, &opt_blake_compact,
-      "Set SPH_COMPACT_BLAKE64 for Xn derived algorithms (Can give better hashrate for some GPUs)"),
+		opt_set_bool, &opt_blake_compact,
+		"Set SPH_COMPACT_BLAKE64 for Xn derived algorithms (Can give better hashrate for some GPUs)"),
 
 	OPT_WITHOUT_ARG("--blake-precalc",
 		opt_set_bool, &opt_nc_blake_precalc,
 		"Precalculate first chunk of the blake hash on the CPU (May improve hashrate on high-end systems)"),
 
+		OPT_WITH_ARG("--coinbase-addr",
+		opt_set_coinbase_addr, NULL, NULL,
+		"Coinbase payout address"),
+
+		OPT_WITH_ARG("--coinbase-sig",
+		opt_set_coinbase_sig, NULL, NULL,
+		"Coinbase signature"),
+
 #ifdef HAVE_CURSES
   OPT_WITHOUT_ARG("--compact",
-      opt_set_bool, &opt_compact,
-      "Use compact display without per device statistics"),
+		opt_set_bool, &opt_compact,
+		"Use compact display without per device statistics"),
 #endif
   OPT_WITHOUT_ARG("--debug|-D",
-      enable_debug, &opt_debug,
-      "Enable debug output"),
+		enable_debug, &opt_debug,
+		"Enable debug output"),
   OPT_WITHOUT_ARG("--debug-log",
-      opt_set_bool, &opt_debug,
-      "Enable debug logging when stderr is redirected to file"),
+		opt_set_bool, &opt_debug,
+		"Enable debug logging when stderr is redirected to file"),
   OPT_WITH_ARG("--default-profile",
-      set_default_profile, NULL, NULL,
-      "Set Default Profile"),
+		set_default_profile, NULL, NULL,
+		"Set Default Profile"),
   OPT_WITH_ARG("--description",
-      set_pool_description, NULL, NULL,
-      "Pool description"),
+		set_pool_description, NULL, NULL,
+		"Pool description"),
   OPT_WITH_ARG("--device|-d",
-      set_default_devices, NULL, NULL,
-      "Select device to use, one value, range and/or comma separated (e.g. 0-2,4) default: all"),
+		set_default_devices, NULL, NULL,
+		"Select device to use, one value, range and/or comma separated (e.g. 0-2,4) default: all"),
   OPT_WITHOUT_ARG("--disable-rejecting",
-      opt_set_bool, &opt_disable_pool,
-      "Automatically disable pools that continually reject shares"),
+		opt_set_bool, &opt_disable_pool,
+		"Automatically disable pools that continually reject shares"),
   OPT_WITH_ARG("--expiry|-E",
-      set_int_0_to_9999, opt_show_intval, &opt_expiry,
-      "Upper bound on how many seconds after getting work we consider a share from it stale"),
+		set_int_0_to_9999, opt_show_intval, &opt_expiry,
+		"Upper bound on how many seconds after getting work we consider a share from it stale"),
+
+		// nonce offset
+		OPT_WITHOUT_ARG("--random-nonce",
+		opt_set_bool, &opt_rand_nonce,
+		"Randomly offset nonce"),
+      OPT_WITH_ARG("--start-nonce",
+		set_int_0_to_max, opt_show_intval, &opt_start_nonce,
+		"Set start nonce"),
 
   // event options
   OPT_WITH_ARG("--event-on",
@@ -1984,6 +2032,7 @@ void clean_work(struct work *w)
   free(w->job_id);
   free(w->ntime);
   free(w->coinbase);
+  free(w->txn_data);
   free(w->nonce1);
   memset(w, 0, sizeof(struct work));
 }
@@ -2010,9 +2059,14 @@ static bool __build_gbt_txns(struct pool *pool, json_t *res_val)
   bool ret = false;
   size_t cal_len;
   int i;
+  unsigned char *txn_bin = NULL;
+  uint32_t txn_size = 0;
+  size_t largest_txn = 0;
 
   free(pool->txn_hashes);
+  free(pool->txn_data);
   pool->txn_hashes = NULL;
+  pool->txn_data = NULL;
   pool->gbt_txns = 0;
 
   txn_array = json_object_get(res_val, "transactions");
@@ -2028,23 +2082,45 @@ static bool __build_gbt_txns(struct pool *pool, json_t *res_val)
   if (unlikely(!pool->txn_hashes))
     quit(1, "Failed to calloc txn_hashes in __build_gbt_txns");
 
+  // Get total txn lens
+  for (i = 0; i < pool->gbt_txns; i++) {
+	  json_t *txn_val = json_object_get(json_array_get(txn_array, i), "data");
+	  const char *txn = json_string_value(txn_val);
+	  uint32_t sz = strlen(txn);
+
+	  txn_size += sz;
+	  sz /= 2;
+	  largest_txn = sz > largest_txn ? sz : largest_txn;
+  }
+
+  align_len(&largest_txn);
+  txn_bin = (unsigned char *)calloc(largest_txn, 1);
+
+  if (unlikely(!txn_bin))
+	  quit(1, "Failed to calloc txn_bin in __build_gbt_txns");
+
+  pool->txn_data = (char *)calloc(txn_size+1, 1);
+  txn_size = 0;
+
   for (i = 0; i < pool->gbt_txns; i++) {
     json_t *txn_val = json_object_get(json_array_get(txn_array, i), "data");
     const char *txn = json_string_value(txn_val);
     size_t txn_len = strlen(txn);
-    unsigned char *txn_bin;
 
-    cal_len = txn_len;
-    align_len(&cal_len);
-    txn_bin = (unsigned char *)calloc(cal_len, 1);
-    if (unlikely(!txn_bin))
-      quit(1, "Failed to calloc txn_bin in __build_gbt_txns");
+	 // copy data
+	 memcpy(pool->txn_data + txn_size, txn, txn_len);
+	 txn_size += txn_len;
+
+	 // gen hash
     if (unlikely(!hex2bin(txn_bin, txn, txn_len / 2)))
       quit(1, "Failed to hex2bin txn_bin");
 
     gen_hash(txn_bin, (uint)(txn_len / 2), pool->txn_hashes + (32 * i));
-    free(txn_bin);
   }
+
+  free(txn_bin);
+  pool->txn_data[txn_size] = '\0';
+
 out:
   return ret;
 }
@@ -2204,6 +2280,7 @@ static void gen_gbt_work(struct pool *pool, struct work *work)
   memcpy(work->target, pool->gbt_target, 32);
 
   work->coinbase = bin2hex(pool->coinbase, pool->coinbase_len);
+  work->txn_data = strdup(pool->txn_data);
 
   /* For encoding the block data on submission */
   work->gbt_txns = pool->gbt_txns + 1;
@@ -2238,7 +2315,7 @@ static void gen_gbt_work(struct pool *pool, struct work *work)
   work->work_block = work_block;
   /* Nominally allow a driver to ntime roll 60 seconds */
   work->drv_rolllimit = 0;
-  //calc_diff(work, 0);
+  calc_diff(work, 0);
   cgtime(&work->tv_staged);
 }
 
@@ -2258,7 +2335,6 @@ static bool gbt_decode(struct pool *pool, json_t *res_val)
   const char *coinbasetxn;
   const char *longpollid;
   unsigned char hash_swap[32];
-  int expires;
   int version;
   int curtime;
   bool submitold;
@@ -2273,7 +2349,6 @@ static bool gbt_decode(struct pool *pool, json_t *res_val)
   target = json_string_value(json_object_get(res_val, "target"));
   coinbasetxn = json_string_value(json_object_get(json_object_get(res_val, "coinbasetxn"), "data"));
   longpollid = json_string_value(json_object_get(res_val, "longpollid"));
-  expires = (int) json_integer_value(json_object_get(res_val, "expires"));
   version = (int) json_integer_value(json_object_get(res_val, "version"));
   curtime = (int) json_integer_value(json_object_get(res_val, "curtime"));
   submitold = json_is_true(json_object_get(res_val, "submitold"));
@@ -2292,15 +2367,108 @@ static bool gbt_decode(struct pool *pool, json_t *res_val)
   pool->HeightNumber = (int)json_integer_value(json_object_get(res_val, "height"));
   pool->EpochNumber = pool->HeightNumber / 400;
 
-  // HACK REMOVE THIS LATER
-  if (!coinbasetxn) {
-	  coinbasetxn = json_string_value(json_object_get(res_val, "previousblockhash")); // still need to make this
-	  expires = (int)json_integer_value(json_object_get(res_val, "curtime")) + 4000; // complete guess
+  // Generate coinbasetxn if it wasn't provided to us
+  bool coinbase_append = false;
+  json_t* tmp = NULL;
+  int n = 0;
+  int cbtx_size=0;
+  unsigned char txc_vi[9];
+  unsigned char cbtx[256];
+  char cbtx_hex[2048];
+  if (!coinbasetxn)
+  {
+	  int64_t cbvalue;
+	  if (!pool->pk_script_size) {
+		  applog(LOG_ERR, "No payout address provided");
+		  return false;
+	  }
+	  tmp = json_object_get(res_val, "coinbasevalue");
+	  if (!tmp || !json_is_number(tmp)) {
+		  applog(LOG_ERR, "JSON invalid coinbasevalue");
+		  return false;
+	  }
+	  cbvalue = (int64_t)(json_is_integer(tmp) ? json_integer_value(tmp) : json_number_value(tmp));
+	  le32enc((uint32_t *)cbtx, 1); /* version */
+	  cbtx[4] = 1; /* in-counter */
+	  memset(cbtx + 5, 0x00, 32); /* prev txout hash */
+	  le32enc((uint32_t *)(cbtx + 37), 0xffffffff); /* prev txout index */
+	  cbtx_size = 43;
+	  /* BIP 34: height in coinbase */
+	  for (n = pool->HeightNumber; n; n >>= 8)
+		  cbtx[cbtx_size++] = n & 0xff;
+	  if (cbtx[cbtx_size - 1] & 0x80) { // this is required also
+		  cbtx[cbtx_size++] = 0x0;
+	  }
+	  cbtx[42] = cbtx_size - 43;
+	  cbtx[41] = cbtx_size - 42; /* scriptsig length */
+	  le32enc((uint32_t *)(cbtx + cbtx_size), 0xffffffff); /* sequence */
+	  cbtx_size += 4;
+	  cbtx[cbtx_size++] = 1; /* out-counter */
+	  le32enc((uint32_t *)(cbtx + cbtx_size), (uint32_t)cbvalue); /* value */
+	  le32enc((uint32_t *)(cbtx + cbtx_size + 4), cbvalue >> 32);
+	  cbtx_size += 8;
+	  cbtx[cbtx_size++] = (uint8_t)pool->pk_script_size; /* txout-script length */
+	  memcpy(cbtx + cbtx_size, pool->pk_script, pool->pk_script_size);
+	  cbtx_size += (int)pool->pk_script_size;
+	  le32enc((uint32_t *)(cbtx + cbtx_size), 0); /* lock time */
+	  cbtx_size += 4;
+	  coinbase_append = true;
   }
-  // HACK REMOVE THIS LATER
+  if (coinbase_append)
+  {
+	  unsigned char xsig[100];
+	  int xsig_len = 0;
+
+	  if (*(coinbase_sig)) {
+		  n = (int)strlen(coinbase_sig);
+		  if (cbtx[41] + xsig_len + n <= 100) {
+			  memcpy(xsig + xsig_len, coinbase_sig, n);
+			  xsig_len += n;
+		  }
+		  else {
+			  applog(LOG_WARNING, "Signature does not fit in coinbase, skipping");
+		  }
+	  }
+
+	  tmp = json_object_get(res_val, "coinbaseaux");
+	  if (tmp && json_is_object(tmp)) {
+		  void *iter = json_object_iter(tmp);
+		  while (iter) {
+			  unsigned char buf[100];
+			  const char *s = json_string_value(json_object_iter_value(iter));
+			  n = s ? (int)(strlen(s) / 2) : 0;
+			  if (!s || n > 100 || !hex2bin(buf, s, n)) {
+				  applog(LOG_ERR, "JSON invalid coinbaseaux");
+				  break;
+			  }
+			  if (cbtx[41] + xsig_len + n <= 100) {
+				  memcpy(xsig + xsig_len, buf, n);
+				  xsig_len += n;
+			  }
+			  iter = json_object_iter_next(tmp, iter);
+		  }
+	  }
+	  if (xsig_len) {
+		  unsigned char *ssig_end = cbtx + 42 + cbtx[41];
+		  int push_len = cbtx[41] + xsig_len < 76 ? 1 :
+			  cbtx[41] + 2 + xsig_len > 100 ? 0 : 2;
+		  n = xsig_len + push_len;
+		  memmove(ssig_end + n, ssig_end, cbtx_size - 42 - cbtx[41]);
+		  cbtx[41] += n;
+		  if (push_len == 2)
+			  *(ssig_end++) = 0x4c; /* OP_PUSHDATA1 */
+		  if (push_len)
+			  *(ssig_end++) = xsig_len;
+		  memcpy(ssig_end, xsig, xsig_len);
+		  cbtx_size += n;
+	  }
+
+	  __bin2hex(cbtx_hex, cbtx, cbtx_size);
+	  coinbasetxn = cbtx_hex;
+  }
 
   if (!previousblockhash || !target || !coinbasetxn || !longpollid ||
-      !expires || !version || !curtime || !bits) {
+      !version || !curtime || !bits) {
     applog(LOG_ERR, "JSON failed to decode GBT");
     return false;
   }
@@ -2309,7 +2477,7 @@ static bool gbt_decode(struct pool *pool, json_t *res_val)
   applog(LOG_DEBUG, "target: %s", target);
   applog(LOG_DEBUG, "coinbasetxn: %s", coinbasetxn);
   applog(LOG_DEBUG, "longpollid: %s", longpollid);
-  applog(LOG_DEBUG, "expires: %d", expires);
+  //applog(LOG_DEBUG, "expires: %d", expires);
   applog(LOG_DEBUG, "version: %d", version);
   applog(LOG_DEBUG, "curtime: %d", curtime);
   applog(LOG_DEBUG, "submitold: %s", submitold ? "true" : "false");
@@ -2356,7 +2524,7 @@ static bool gbt_decode(struct pool *pool, json_t *res_val)
   //applog(LOG_INFO, "!rpc work target == %s\n", debug_print_nightcap_hash((uint32_t*)pool->gbt_target));
   //applog(LOG_INFO, "!rpc work target BEFORE == %s\n", debug_print_nightcap_hash((uint32_t*)hash_swap));
 
-  pool->gbt_expires = expires;
+  //pool->gbt_expires = expires;
   pool->gbt_version = htobe32(version);
   pool->curtime = htobe32(curtime);
   pool->submit_old = submitold;
@@ -3272,34 +3440,43 @@ static bool submit_upstream_work(struct work *work, CURL *curl, char *curl_err_s
     be32enc(work->data + 188, 0x000005a0UL);
   }
 
-  hexstr = bin2hex(work->data, datasize);
-
   /* build JSON-RPC request */
   if (work->gbt) {
-    char *gbt_block, *varint;
-    unsigned char data[80];
+	  char *gbt_block;
+    unsigned char data[100];
+	 char varint[16];
 
-    flip80(data, work->data);
-    gbt_block = bin2hex(data, 80);
+	 if (work->pool->algorithm.type == ALGO_NIGHTCAP) {
+		 flip100(data, work->data);
+		 gbt_block = bin2hex(data, 100);
+	 } else {
+		 flip80(data, work->data);
+		 gbt_block = bin2hex(data, datasize);
+	 }
 
+	 // varint_encode
+	 memset(varint, '\0', sizeof(varint));
     if (work->gbt_txns < 0xfd) {
       uint8_t val = work->gbt_txns;
 
-      varint = bin2hex((const unsigned char *)&val, 1);
+		__bin2hex(varint, (const unsigned char *)&val, 1);
     } else if (work->gbt_txns <= 0xffff) {
       uint16_t val = htole16(work->gbt_txns);
 
       gbt_block = (char *)realloc_strcat(gbt_block, "fd");
-      varint = bin2hex((const unsigned char *)&val, 2);
+		__bin2hex(varint, (const unsigned char *)&val, 2);
     } else {
       uint32_t val = htole32(work->gbt_txns);
 
       gbt_block = (char *)realloc_strcat(gbt_block, "fe");
-      varint = bin2hex((const unsigned char *)&val, 4);
+		__bin2hex(varint, (const unsigned char *)&val, 4);
     }
     gbt_block = (char *)realloc_strcat(gbt_block, varint);
-    free(varint);
     gbt_block = (char *)realloc_strcat(gbt_block, work->coinbase);
+	 if (work->txn_data)
+	 {
+		 gbt_block = (char *)realloc_strcat(gbt_block, work->txn_data);
+	 }
 
     s = strdup("{\"id\": 0, \"method\": \"submitblock\", \"params\": [\"");
     s = (char *)realloc_strcat(s, gbt_block);
@@ -3311,6 +3488,7 @@ static bool submit_upstream_work(struct work *work, CURL *curl, char *curl_err_s
       s = (char *)realloc_strcat(s, "\", {}]}");
     free(gbt_block);
   } else {
+	 hexstr = bin2hex(work->data, datasize);
     s = strdup("{\"method\": \"getwork\", \"params\": [ \"");
     s = (char *)realloc_strcat(s, hexstr);
     s = (char *)realloc_strcat(s, "\" ], \"id\":1}");
@@ -3625,7 +3803,7 @@ static void calc_diff(struct work *work, double known)
       dcut64 = (double)*((uint64_t *)(work->target + 22));
     }
     else {
-      dcut64 = le256todouble(work->target);
+      dcut64 = le256todouble(work->gbt ? work->pool->gbt_target : work->target);
     }
     if (unlikely(!dcut64))
       dcut64 = 1;
@@ -3993,7 +4171,7 @@ static void *submit_work_thread(void *userdata)
     }
 
     /* pause, then restart work-request loop */
-    applog(LOG_INFO, "json_rpc_call failed on submit_work, retrying");
+    applog(LOG_NOTICE, "json_rpc_call failed on submit_work, retrying");
   }
   push_curl_entry(ce, pool);
 
@@ -4143,6 +4321,8 @@ static void _copy_work(struct work *work, const struct work *base_work, int noff
   }
   if (base_work->coinbase)
     work->coinbase = strdup(base_work->coinbase);
+  if (base_work->txn_data)
+	  work->txn_data = strdup(base_work->txn_data);
 }
 
 /* Generates a copy of an existing work struct, creating fresh heap allocations
@@ -4634,20 +4814,22 @@ static bool test_work_current(struct work *work)
     }
 
     work->work_block = ++work_block;
- if (opt_morenotices)
-  {
-    if (work->longpoll) {
-      if (work->stratum) {
-        applog(LOG_NOTICE, "Stratum from %s detected new block", get_pool_name(pool));
-      } else {
-        applog(LOG_NOTICE, "%sLONGPOLL from %s detected new block",
-               work->gbt ? "GBT " : "", get_pool_name(pool));
-      }
-    } else if (have_longpoll)
-      applog(LOG_NOTICE, "New block detected on network before pool notification");
-    else
-      applog(LOG_NOTICE, "New block detected on network");
-  }
+	 if (opt_morenotices)
+	 {
+		 if (work->longpoll) {
+			 if (work->stratum) {
+				 applog(LOG_NOTICE, "Stratum from %s detected new block", get_pool_name(pool));
+			 }
+			 else {
+				 applog(LOG_NOTICE, "%sLONGPOLL from %s detected new block",
+					 work->gbt ? "GBT " : "", get_pool_name(pool));
+			 }
+		 }
+		 else if (have_longpoll)
+			 applog(LOG_NOTICE, "New block detected on network before pool notification");
+		 else
+			 applog(LOG_NOTICE, "New block detected on network");
+	 }
     restart_threads();
   } else {
     if (memcmp(pool->prev_block, bedata, 32)) {
@@ -6024,7 +6206,7 @@ retry_stratum:
     val = json_rpc_call(curl, curl_err_str, pool->rpc_url, pool->rpc_userpass,
             gbt_req, true, false, &rolltime, pool, false);
     if (val) {
-      bool append = false, submit = false;
+      bool append = false, submit = false, aux = false;
       json_t *res_val, *mutables;
       int i, mutsize = 0;
 
@@ -6044,14 +6226,15 @@ retry_stratum:
             append = true;
           else if (!strncasecmp(mut, "submit/coinbase", 15))
             submit = true;
+			 else if (!strncasecmp(mut, "transactions", 12))
+				 aux = true;
         }
       }
       json_decref(val);
 
       /* Only use GBT if it supports coinbase append and
        * submit coinbase */
-      // HACK REMOVE THIS LATER
-      if (append && submit) {
+      if ((append && submit) || aux) {
         pool->has_gbt = true;
         pool->rpc_req = gbt_req;
       }
@@ -7265,7 +7448,7 @@ static void submit_work_async(struct work *work)
       free_work(work);
     }
   } else {
-    applog(LOG_DEBUG, "Pushing submit work to work thread");
+    applog(LOG_NOTICE, "Pushing submit work to work thread");
     if (unlikely(pthread_create(&submit_thread, NULL, submit_work_thread, (void *)work)))
       quit(1, "Failed to create submit_work_thread");
   }
@@ -7375,7 +7558,7 @@ bool submit_tested_work(struct thr_info *thr, struct work *work)
     }
   }
   else if (!fulltest(work->hash, work->target)) {
-    applog(LOG_INFO, "%s %d: Share above target", thr->cgpu->drv->name,
+    applog(LOG_NOTICE, "%s %d: Share above target", thr->cgpu->drv->name,
            thr->cgpu->device_id);
     return false;
   }
@@ -7461,7 +7644,13 @@ static void hash_sole_work(struct thr_info *mythr)
     cgpu->new_work = true;
 
     cgtime(&tv_workstart);
-    work->blk.nonce = 0;
+
+	 // We need to fairly spread the nonces around the gpus and threads
+	 work->blk.nonce = opt_start_nonce + ((0xffffffffU / mining_threads) * mythr->id);// opt_start_nonce;
+	 if (opt_rand_nonce)
+	 {
+		 work->blk.nonce += ((rand() * 4) & UINT32_MAX) / mining_threads;
+	 }
 	 work->EpochNumber = work->pool->EpochNumber;
 	 work->HeightNumber = work->pool->HeightNumber;
 
@@ -7499,6 +7688,12 @@ static void hash_sole_work(struct thr_info *mythr)
         *(uint64_t*)(work->device_target + 24) = bits64 / work->device_diff;
         work->device_diff /= mult;
     }
+	 else if (work->pool->algorithm.type == ALGO_NIGHTCAP && work->gbt) {
+		 // Need to hash with gbt difficulty always if we're solo mining
+		 memcpy(work->device_target, work->pool->gbt_target, 32);
+		 work->device_diff = work->work_difficulty;
+		 drv->working_diff = work->device_diff;
+	 }
     else {
         //applog(LOG_INFO, "Setting device target (diff=%f) in hash_sole_work, work=%lx", work->device_diff, work);
         set_target(work->device_target, work->device_diff, work->pool->algorithm.diff_multiplier2, work->thr_id);

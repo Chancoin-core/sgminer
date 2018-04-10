@@ -67,6 +67,7 @@ typedef union _MixNodes {
 typedef union {
 	uint h4[8];
 	ulong h8[4];
+	uint2 u2[4];
 } hash32_t;
 
 //#define fnv(x, y) ((x) * FNV_PRIME ^ (y)) % (0xffffffff)
@@ -87,7 +88,11 @@ inline uint4 fnv4(const uint4 v1, const uint4 v2) {
 #define ROTL64_1(x, y)  amd_bitalign((x), (x).s10, (32U - y))
 #define ROTL64_2(x, y)  amd_bitalign((x).s10, (x), (32U - y))
 #define ROTL64_8(x, y)  amd_bitalign((x), (x).s10, 24U)
+
+
+#define ROTR64_8(x, y)  amd_bitalign((x), (x).s10, 24U)
 #define BFE(x, start, len)  amd_bfe(x, start, len)
+
 #endif
 
 #ifdef NVIDIA
@@ -113,6 +118,7 @@ static inline uint2 rol8(const uint2 a) {
 #define ROTL64_1(x, y) rol2(x, y)
 #define ROTL64_2(x, y) ror2(x, (32U - y))
 #define ROTL64_8(x, y) rol8(x)
+#define ROTR64_8(x, y) ror8(x)
 
 static inline uint nv_bfe(const uint a, const uint start, const uint len) {
 	uint r;
@@ -168,7 +174,7 @@ __constant static const uint  c_u256[16] = {
 #define SPH_ROTR64(x, n)   SPH_ROTL64(x, (64 - (n)))
 
 
-#define sph_bswap32(n) (rotate(n & 0x00FF00FF, 24U)|(rotate(n, 8U) & 0x00FF00FF))
+inline uint sph_bswap32(uint n) { return (rotate(n & 0x00FF00FF, 24U)|(rotate(n, 8U) & 0x00FF00FF)); }
 
 #define BLAKE256_GS(m0, m1, c0, c1, a, b, c, d)   do { \
 		a = SPH_T32(a + b + (m0 ^ c1)); \
@@ -404,68 +410,143 @@ __constant static const ulong RC[] = {
   SPH_C64(0x0000000080000001), SPH_C64(0x8000000080008008)
 };
 
-
-inline void keccak_block(ulong *s) {
-	ulong t[5], u[5], v, w;
-
-	for (uint i = 0; i < 24; i++) {
-		/* theta: c = a[0,i] ^ a[1,i] ^ .. a[4,i] */
-		t[0] = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20];
-		t[1] = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21];
-		t[2] = s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22];
-		t[3] = s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23];
-		t[4] = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24];
-
-		/* theta: d[i] = c[i+4] ^ rotl(c[i+1],1) */
-		u[0] = t[4] ^ SPH_ROTL64(t[1], 1);
-		u[1] = t[0] ^ SPH_ROTL64(t[2], 1);
-		u[2] = t[1] ^ SPH_ROTL64(t[3], 1);
-		u[3] = t[2] ^ SPH_ROTL64(t[4], 1);
-		u[4] = t[3] ^ SPH_ROTL64(t[0], 1);
-
-		/* theta: a[0,i], a[1,i], .. a[4,i] ^= d[i] */
-		s[0] ^= u[0]; s[5] ^= u[0]; s[10] ^= u[0]; s[15] ^= u[0]; s[20] ^= u[0];
-		s[1] ^= u[1]; s[6] ^= u[1]; s[11] ^= u[1]; s[16] ^= u[1]; s[21] ^= u[1];
-		s[2] ^= u[2]; s[7] ^= u[2]; s[12] ^= u[2]; s[17] ^= u[2]; s[22] ^= u[2];
-		s[3] ^= u[3]; s[8] ^= u[3]; s[13] ^= u[3]; s[18] ^= u[3]; s[23] ^= u[3];
-		s[4] ^= u[4]; s[9] ^= u[4]; s[14] ^= u[4]; s[19] ^= u[4]; s[24] ^= u[4];
-
-		/* rho pi: b[..] = rotl(a[..], ..) */
-		v = s[1];
-		s[1] = SPH_ROTL64(s[6], 44);
-		s[6] = SPH_ROTL64(s[9], 20);
-		s[9] = SPH_ROTL64(s[22], 61);
-		s[22] = SPH_ROTL64(s[14], 39);
-		s[14] = SPH_ROTL64(s[20], 18);
-		s[20] = SPH_ROTL64(s[2], 62);
-		s[2] = SPH_ROTL64(s[12], 43);
-		s[12] = SPH_ROTL64(s[13], 25);
-		s[13] = SPH_ROTL64(s[19], 8);
-		s[19] = SPH_ROTL64(s[23], 56);
-		s[23] = SPH_ROTL64(s[15], 41);
-		s[15] = SPH_ROTL64(s[4], 27);
-		s[4] = SPH_ROTL64(s[24], 14);
-		s[24] = SPH_ROTL64(s[21], 2);
-		s[21] = SPH_ROTL64(s[8], 55);
-		s[8] = SPH_ROTL64(s[16], 45);
-		s[16] = SPH_ROTL64(s[5], 36);
-		s[5] = SPH_ROTL64(s[3], 28);
-		s[3] = SPH_ROTL64(s[18], 21);
-		s[18] = SPH_ROTL64(s[17], 15);
-		s[17] = SPH_ROTL64(s[11], 10);
-		s[11] = SPH_ROTL64(s[7], 6);
-		s[7] = SPH_ROTL64(s[10], 3);
-		s[10] = SPH_ROTL64(v, 1);
-
-		v = s[0]; w = s[1]; s[0] ^= (~w) & s[2]; s[1] ^= (~s[2]) & s[3]; s[2] ^= (~s[3]) & s[4]; s[3] ^= (~s[4]) & v; s[4] ^= (~v) & w;
-		v = s[5]; w = s[6]; s[5] ^= (~w) & s[7]; s[6] ^= (~s[7]) & s[8]; s[7] ^= (~s[8]) & s[9]; s[8] ^= (~s[9]) & v; s[9] ^= (~v) & w;
-		v = s[10]; w = s[11]; s[10] ^= (~w) & s[12]; s[11] ^= (~s[12]) & s[13]; s[12] ^= (~s[13]) & s[14]; s[13] ^= (~s[14]) & v; s[14] ^= (~v) & w;
-		v = s[15]; w = s[16]; s[15] ^= (~w) & s[17]; s[16] ^= (~s[17]) & s[18]; s[17] ^= (~s[18]) & s[19]; s[18] ^= (~s[19]) & v; s[19] ^= (~v) & w;
-		v = s[20]; w = s[21]; s[20] ^= (~w) & s[22]; s[21] ^= (~s[22]) & s[23]; s[22] ^= (~s[23]) & s[24]; s[23] ^= (~s[24]) & v; s[24] ^= (~v) & w;
-
-		s[0] ^= RC[i];
-	}
+__constant static const uint2 keccak_round_constants35[24] = {
+	{ 0x00000001ul, 0x00000000 }, { 0x00008082ul, 0x00000000 },
+	{ 0x0000808aul, 0x80000000 }, { 0x80008000ul, 0x80000000 },
+	{ 0x0000808bul, 0x00000000 }, { 0x80000001ul, 0x00000000 },
+	{ 0x80008081ul, 0x80000000 }, { 0x00008009ul, 0x80000000 },
+	{ 0x0000008aul, 0x00000000 }, { 0x00000088ul, 0x00000000 },
+	{ 0x80008009ul, 0x00000000 }, { 0x8000000aul, 0x00000000 },
+	{ 0x8000808bul, 0x00000000 }, { 0x0000008bul, 0x80000000 },
+	{ 0x00008089ul, 0x80000000 }, { 0x00008003ul, 0x80000000 },
+	{ 0x00008002ul, 0x80000000 }, { 0x00000080ul, 0x80000000 },
+	{ 0x0000800aul, 0x00000000 }, { 0x8000000aul, 0x80000000 },
+	{ 0x80008081ul, 0x80000000 }, { 0x00008080ul, 0x80000000 },
+	{ 0x80000001ul, 0x00000000 }, { 0x80008008ul, 0x80000000 }
 };
+ 
+// SPH_ROTL64
+//#define KROL2(x, y) as_uint2(rotate(as_ulong(x), (ulong)(y)) & 0xFFFFFFFFFFFFFFFFUL)
+
+// SPH_ROTL64(s[19], 8);
+//#define KROL8(x) as_uint2(rotate(as_ulong(x),  (ulong)(8)) & 0xFFFFFFFFFFFFFFFFUL)
+
+// SPH_ROTL64(s[23], 56);     // 64-56=8
+//#define KROR8(x) as_uint2(rotate(as_ulong(x),  (ulong)(56)) & 0xFFFFFFFFFFFFFFFFUL)
+
+#ifndef NVIDIA
+
+
+inline uint2 ROL2(const uint2 v, const int n)
+{
+	uint2 result;
+	if (n <= 32)
+	{
+		//result.y = ((v.y << (n)) | (v.x >> (32 - n)));
+		//result.x = ((v.x << (n)) | (v.y >> (32 - n)));
+		return amd_bitalign((v).xy, (v).yx, 32 - n);
+	}
+	else
+	{
+		//result.y = ((v.x << (n - 32)) | (v.y >> (64 - n)));
+		//result.x = ((v.y << (n - 32)) | (v.x >> (64 - n)));
+		return amd_bitalign((v).yx, (v).xy, 64 - n);
+	}
+	return result;
+}
+
+
+#define KROL2(vv, r) ROL2(vv,r)
+#else
+
+inline uint2 ROL2(const uint2 v, const int n)
+{
+	uint2 result;
+	if (n <= 32)
+	{
+		result.y = ((v.y << (n)) | (v.x >> (32 - n)));
+		result.x = ((v.x << (n)) | (v.y >> (32 - n)));
+	}
+	else
+	{
+		result.y = ((v.x << (n - 32)) | (v.y >> (64 - n)));
+		result.x = ((v.y << (n - 32)) | (v.x >> (64 - n)));
+	}
+	return result;
+}
+
+
+#define KROL2(vv, r) ROL2(vv, r)
+#endif
+
+// SPH_ROTL64(s[19], 8);
+#define KROL8(x) KROL2(x, 8)
+#define KROR8(x) KROL2(x, 56)
+
+inline void keccak_block_uint2(uint2* s, const uint isolate)
+{
+	uint2 bc[5], tmpxor[5], u, v;
+	//	uint2 s[25];
+	
+	#pragma nounroll
+	for (int i = 0; i < 24; i++)
+	{
+		//if (isolate) {
+		{
+		#pragma unroll
+		for (uint x = 0; x < 5; x++)
+			tmpxor[x] = s[x] ^ s[x + 5] ^ s[x + 10] ^ s[x + 15] ^ s[x + 20];
+
+		bc[0] = tmpxor[0] ^ KROL2(tmpxor[2], 1);
+		bc[1] = tmpxor[1] ^ KROL2(tmpxor[3], 1);
+		bc[2] = tmpxor[2] ^ KROL2(tmpxor[4], 1);
+		bc[3] = tmpxor[3] ^ KROL2(tmpxor[0], 1);
+		bc[4] = tmpxor[4] ^ KROL2(tmpxor[1], 1);
+
+		u = s[1] ^ bc[0];
+
+		s[0] ^= bc[4];
+		s[1] = KROL2(s[6] ^ bc[0], 44);    // ROR2(a, 64 - offset(44)); 
+		s[6] = KROL2(s[9] ^ bc[3], 20);
+		s[9] = KROL2(s[22] ^ bc[1], 61);
+		s[22] = KROL2(s[14] ^ bc[3], 39);
+		s[14] = KROL2(s[20] ^ bc[4], 18);
+		s[20] = KROL2(s[2] ^ bc[1], 62);
+		s[2] = KROL2(s[12] ^ bc[1], 43);
+		s[12] = KROL2(s[13] ^ bc[2], 25);
+		s[13] = KROL8(s[19] ^ bc[3]);
+		s[19] = KROR8(s[23] ^ bc[2]);
+		s[23] = KROL2(s[15] ^ bc[4], 41);
+		s[15] = KROL2(s[4] ^ bc[3], 27);
+		s[4] = KROL2(s[24] ^ bc[3], 14);
+		s[24] = KROL2(s[21] ^ bc[0], 2);
+		s[21] = KROL2(s[8] ^ bc[2], 55);
+		s[8] = KROL2(s[16] ^ bc[0], 45);
+		s[16] = KROL2(s[5] ^ bc[4], 36);
+		s[5] = KROL2(s[3] ^ bc[2], 28);
+		s[3] = KROL2(s[18] ^ bc[2], 21);
+		s[18] = KROL2(s[17] ^ bc[1], 15);
+		s[17] = KROL2(s[11] ^ bc[0], 10);
+		s[11] = KROL2(s[7] ^ bc[1], 6);
+		s[7] = KROL2(s[10] ^ bc[4], 3);
+		s[10] = KROL2(u, 1);
+/*
+		u = s[0]; v = s[1]; s[0] ^= (~v) & s[2]; s[1] ^= (~s[2]) & s[3]; s[2] ^= (~s[3]) & s[4]; s[3] ^= (~s[4]) & u; s[4] ^= (~u) & v;
+		u = s[5]; v = s[6]; s[5] ^= (~v) & s[7]; s[6] ^= (~s[7]) & s[8]; s[7] ^= (~s[8]) & s[9]; s[8] ^= (~s[9]) & u; s[9] ^= (~u) & v;
+		u = s[10]; v = s[11]; s[10] ^= (~v) & s[12]; s[11] ^= (~s[12]) & s[13]; s[12] ^= (~s[13]) & s[14]; s[13] ^= (~s[14]) & u; s[14] ^= (~u) & v;
+		u = s[15]; v = s[16]; s[15] ^= (~v) & s[17]; s[16] ^= (~s[17]) & s[18]; s[17] ^= (~s[18]) & s[19]; s[18] ^= (~s[19]) & u; s[19] ^= (~u) & v;
+		u = s[20]; v = s[21]; s[20] ^= (~v) & s[22]; s[21] ^= (~s[22]) & s[23]; s[22] ^= (~s[23]) & s[24]; s[23] ^= (~s[24]) & u; s[24] ^= (~u) & v;*/
+		
+		u = s[0]; v = s[1]; s[0] = bitselect(s[0]^s[2],s[0],s[1]); s[1] = bitselect(s[1]^s[3],s[1],s[2]); s[2] = bitselect(s[2]^s[4],s[2],s[3]); s[3] = bitselect(s[3]^u,s[3],s[4]); s[4] = bitselect(s[4]^v,s[4],u);
+		u = s[5]; v = s[6]; s[5] = bitselect(s[5]^s[7],s[5],s[6]); s[6] = bitselect(s[6]^s[8],s[6],s[7]); s[7] = bitselect(s[7]^s[9],s[7],s[8]); s[8] = bitselect(s[8]^u,s[8],s[9]); s[9] = bitselect(s[9]^v,s[9],u);
+	  u = s[10]; v = s[11]; s[10] = bitselect(s[10]^s[12],s[10],s[11]); s[11] = bitselect(s[11]^s[13],s[11],s[12]); s[12] = bitselect(s[12]^s[14],s[12],s[13]); s[13] = bitselect(s[13]^u,s[13],s[14]); s[14] = bitselect(s[14]^v,s[14],u);
+		u = s[15]; v = s[16]; s[15] = bitselect(s[15]^s[17],s[15],s[16]); s[16] = bitselect(s[16]^s[18],s[16],s[17]); s[17] = bitselect(s[17]^s[19],s[17],s[18]); s[18] = bitselect(s[18]^u,s[18],s[19]); s[19] = bitselect(s[19]^v,s[19],u);
+		u = s[20]; v = s[21]; s[20] = bitselect(s[20]^s[22],s[20],s[21]); s[21] = bitselect(s[21]^s[23],s[21],s[22]); s[22] = bitselect(s[22]^s[24],s[22],s[23]); s[23] = bitselect(s[23]^u,s[23],s[24]); s[24] = bitselect(s[24]^v,s[24],u);
+
+
+		s[0] ^= keccak_round_constants35[i]; }
+	}
+}
 
 //
 // END KECCAK32
@@ -681,7 +762,7 @@ void Compression256(const uint *M32, uint *H)
 	H[15] = SPH_ROTL32(H[3], 16) + (XH32     ^     Q[31] ^ M32[15]) + (shr(XL32, 2) ^ Q[22] ^ Q[15]);
 }
 
-uint Compression256_last(const uint *M32, const uint *H)
+ulong Compression256_last(const uint *M32, const uint *H)
 {
 	uint XL32, XH32, Q[32];
 
@@ -743,9 +824,16 @@ uint Compression256_last(const uint *M32, const uint *H)
 	/*  This part is the function f_2 - in the documentation            */
 
 	/*  Compute the double chaining pipe for the next message block.    */
+
+	uint ret[2];
+	uint H2 = (shr(XH32, 5) ^ shl(Q[18], 5) ^ M32[2]) + (XL32    ^ Q[26] ^ Q[2]);
 	uint H3 = (shr(XH32, 1) ^ shl(Q[19], 5) ^ M32[3]) + (XL32    ^ Q[27] ^ Q[3]);
-	return (SPH_ROTL32(H3, 16) + (XH32     ^     Q[31] ^ M32[15]) + (shr(XL32, 2) ^ Q[22] ^ Q[15]));
+	ret[0] = SPH_ROTL32(H2, 15) + (XH32     ^     Q[30] ^ M32[14]) + (shr(XL32, 7) ^ Q[21] ^ Q[14]);
+	ret[1] = SPH_ROTL32(H3, 16) + (XH32     ^     Q[31] ^ M32[15]) + (shr(XL32, 2) ^ Q[22] ^ Q[15]);
+
+	return *((ulong*)ret);
 }
+
 
 
 
@@ -1278,6 +1366,87 @@ inline void blake80_noswap(__constant const uint* in_words, uint gid, __global u
 	out_words[7] = sph_bswap32(out_words[7]);
 }
 
+
+// blake80 + keccak, in(80 bytes), out(32 bytes)
+inline void blakeKeccak80_noswap(__constant const uint* in_words, uint gid, __global uint2* out_dwords, const uint isolate)
+{
+	//printf("INPUT WORDS[1]: %s\n", debug_print_hash((uint*)(input_words)));
+	//printf("INPUT WORDS[2]: %s\n", debug_print_hash((uint*)((uint8_t*)(input_words) + (52 - 32))));
+	BLAKE256_COMPRESS32_STATE;
+
+
+#ifndef PRECALC_BLAKE
+	//T0 = SPH_T32(T0 + 512);
+	// Input == input words, already byteswapped
+	uint input_words[19];
+	for (uint i=0; i<20; i++) { input_words[i] = in_words[i]; }
+	BLAKE256_COMPRESS_BEGIN_DIRECT(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
+		512, 0, (input_words[0]),(input_words[1]),(input_words[2]),(input_words[3]),(input_words[4]),(input_words[5]),(input_words[6]),(input_words[7]),(input_words[8]),(input_words[9]),(input_words[10]),(input_words[11]),(input_words[12]),(input_words[13]),(input_words[14]),(input_words[15]));
+#pragma unroll 
+	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
+		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
+		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
+		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
+		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
+		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
+		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
+		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
+		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
+	}
+	BLAKE256_COMPRESS_END_DIRECT_NOSWAP(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
+		                                input_words[0], input_words[1], input_words[2], input_words[3], input_words[4], input_words[5], input_words[6], input_words[7]);
+#else
+	__constant const uint* input_words = in_words;
+#endif
+
+	//printf("nonce[%u] blake32 after step H=[%x,%x,%x,%x,%x,%x,%x,%x]\n", gid, input_words[0], input_words[1], input_words[2], input_words[3], input_words[4], input_words[5], input_words[6], input_words[7]);
+
+	// blake close - filled case
+	//T0 -= 512 - 128; // i.e. 128
+	//T0 = SPH_T32(T0 + 512);
+	//T0 = 640;
+
+	//printf("blake32 full step T0=0x%x T1=0x%x H=[%x,%x,%x,%x,%x,%x,%x,%x] S=[%x,%x,%x,%x]\n", T0, T1, H0, H1, H2, H3, H4, H5, H6, H7, S0, S1, S2, S3);
+
+	// NOTE: At this stage, input_words[0...7] contains the previous state of the blake hash so we can continue on similarly to before
+
+	BLAKE256_COMPRESS_BEGIN_DIRECT(input_words[0], input_words[1], input_words[2], input_words[3], input_words[4], input_words[5], input_words[6], input_words[7], 640, 0, 
+		                          (input_words[16]),(input_words[17]),(input_words[18]),(gid),2147483648,0,0,0,0,0,0,0,0,1,0,640);
+#pragma unroll 
+	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
+		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
+		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
+		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
+		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
+		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
+		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
+		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
+		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
+	}
+	//BLAKE256_COMPRESS_END_DIRECT_NOSWAP(input_words[0], input_words[1], input_words[2], input_words[3], input_words[4], input_words[5], input_words[6], input_words[7], 
+	//	                         out_words[0], out_words[1], out_words[2], out_words[3], out_words[4], out_words[5], out_words[6], out_words[7]);
+
+
+	uint2 keccak_gpu_state[25] = {0}; // 50 ints
+
+	keccak_gpu_state[0].x = sph_bswap32(input_words[0] ^ (V[0] ^ V[8]));
+	keccak_gpu_state[0].y = sph_bswap32(input_words[1] ^ (V[1] ^ V[9]));
+	keccak_gpu_state[1].x = sph_bswap32(input_words[2] ^ (V[2] ^ V[10]));
+	keccak_gpu_state[1].y = sph_bswap32(input_words[3] ^ (V[3] ^ V[11]));
+	keccak_gpu_state[2].x = sph_bswap32(input_words[4] ^ (V[4] ^ V[12]));
+	keccak_gpu_state[2].y = sph_bswap32(input_words[5] ^ (V[5] ^ V[13]));
+	keccak_gpu_state[3].x = sph_bswap32(input_words[6] ^ (V[6] ^ V[14]));
+	keccak_gpu_state[3].y = sph_bswap32(input_words[7] ^ (V[7] ^ V[15]));
+	keccak_gpu_state[4] = (uint2)(1, 0);
+
+	keccak_gpu_state[16] = (uint2)(0, 0x80000000);
+	
+	keccak_block_uint2(&keccak_gpu_state[0], isolate);
+	
+	#pragma unroll 4
+	for (int i = 0; i<4; i++) { out_dwords[i] = keccak_gpu_state[i]; }
+}
+
 // blake80, in(52 bytes), out(32 bytes)
 inline void blake52(const uint* input_words, __global uint* out_words)
 {
@@ -1324,6 +1493,65 @@ inline void blake52(const uint* input_words, __global uint* out_words)
 	out_words[5] = sph_bswap32(out_words[5]);
 	out_words[6] = sph_bswap32(out_words[6]);
 	out_words[7] = sph_bswap32(out_words[7]);
+}
+
+
+// blake80 + keccak, in(52 bytes), out(32 bytes)
+inline void blakeKeccak52(const uint* input_words, __global uint2* out_dwords, const uint isolate)
+{
+	// Blake256 vars
+	//BLAKE256_STATE;
+	BLAKE256_COMPRESS32_STATE;
+
+	// Blake256 start hash
+	//INIT_BLAKE256_STATE;
+	// Blake hash full input
+	// blake close - t0==0 case
+	//T0 = SPH_C32(0xFFFFFE00) + 416;
+	//T1 = SPH_C32(0xFFFFFFFF);
+	//T0 = SPH_T32(T0 + 512);
+	//T1 = SPH_T32(T1 + 1);
+
+	//printf("blake32 full step T0=0x%x T1=0x%x H=[%x,%x,%x,%x,%x,%x,%x,%x] S=[%x,%x,%x,%x]\n", T0, T1, H0, H1, H2, H3, H4, H5, H6, H7, S0, S1, S2, S3);
+	BLAKE256_COMPRESS_BEGIN_DIRECT(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
+		SPH_C32(0x1a0), SPH_C32(0x0), sph_bswap32(input_words[0]),sph_bswap32(input_words[1]),sph_bswap32(input_words[2]),sph_bswap32(input_words[3]),sph_bswap32(input_words[4]),sph_bswap32(input_words[5]),sph_bswap32(input_words[6]),sph_bswap32(input_words[7]),sph_bswap32(input_words[8]),sph_bswap32(input_words[9]),sph_bswap32(input_words[10]),sph_bswap32(input_words[11]),sph_bswap32(input_words[12]),2147483649,0,416);
+
+	//BLAKE256_COMPRESS_BEGIN_LIGHT(SPH_C32(0x1a0), SPH_C32(0x1), 
+	//	                          sph_bswap32(input_words[0]),sph_bswap32(input_words[1]),sph_bswap32(input_words[2]),sph_bswap32(input_words[3]),sph_bswap32(input_words[4]),sph_bswap32(input_words[5]),sph_bswap32(input_words[6]),sph_bswap32(input_words[7]),sph_bswap32(input_words[8]),sph_bswap32(input_words[9]),sph_bswap32(input_words[10]),sph_bswap32(input_words[11]),sph_bswap32(input_words[12]),2147483649,0,416);
+#pragma unroll 
+	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
+		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
+		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
+		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
+		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
+		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
+		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
+		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
+		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
+	}
+	//BLAKE256_COMPRESS_END;
+	//BLAKE256_COMPRESS_END_DIRECT_NOSWAP(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19), out_words[0], out_words[1], out_words[2], out_words[3], out_words[4], out_words[5], out_words[6], out_words[7]);
+
+	//printf("blake32 final step T0=0x%x T1=0x%x H=[%x,%x,%x,%x,%x,%x,%x,%x] S=[%x,%x,%x,%x]\n", T0, T1, H0, H1, H2, H3, H4, H5, H6, H7, S0, S1, S2, S3);
+
+	uint2 keccak_gpu_state[25] = {0}; // 50 ints
+
+	keccak_gpu_state[0].x = sph_bswap32(SPH_C32(0x6a09e667) ^ (V[0] ^ V[8]));
+	keccak_gpu_state[0].y = sph_bswap32(SPH_C32(0xbb67ae85) ^ (V[1] ^ V[9]));
+	keccak_gpu_state[1].x = sph_bswap32(SPH_C32(0x3c6ef372) ^ (V[2] ^ V[10]));
+	keccak_gpu_state[1].y = sph_bswap32(SPH_C32(0xa54ff53a) ^ (V[3] ^ V[11]));
+	keccak_gpu_state[2].x = sph_bswap32(SPH_C32(0x510e527f) ^ (V[4] ^ V[12]));
+	keccak_gpu_state[2].y = sph_bswap32(SPH_C32(0x9b05688c) ^ (V[5] ^ V[13]));
+	keccak_gpu_state[3].x = sph_bswap32(SPH_C32(0x1f83d9ab) ^ (V[6] ^ V[14]));
+	keccak_gpu_state[3].y = sph_bswap32(SPH_C32(0x5be0cd19) ^ (V[7] ^ V[15]));
+	keccak_gpu_state[4] = (uint2)(1, 0);
+
+	keccak_gpu_state[16] = (uint2)(0, 0x80000000);
+	
+	keccak_block_uint2(&keccak_gpu_state[0], isolate);
+	
+	#pragma unroll 4
+	for (int i = 0; i<4; i++) { out_dwords[i] = keccak_gpu_state[i]; }
 }
 
 // skein32, in(32 bytes), out(32 bytes)
@@ -1402,28 +1630,6 @@ inline void skein32(__global const ulong* in_dwords, __global ulong* out_dwords)
 	out_dwords[3]      = (p3);
 }
 
-// keccak32, in(32 bytes), out(32 bytes)
-#ifndef KACCAK_32
-inline void keccak32(__global const ulong* input_dwords, __global ulong* output_dwords)
-{
-	ulong keccak_gpu_state[25]; // 50 ints
-
-	keccak_gpu_state[0] = (input_dwords[0]);
-	keccak_gpu_state[1] = (input_dwords[1]);
-	keccak_gpu_state[2] = (input_dwords[2]);
-	keccak_gpu_state[3] = (input_dwords[3]);
-
-	for (int i = 4; i<25; i++) {
-		keccak_gpu_state[i] = 0;
-	}
-	keccak_gpu_state[4] = 0x0000000000000001;
-	keccak_gpu_state[16] = 0x8000000000000000;
-
-	keccak_block((ulong*)&keccak_gpu_state[0]);
-	for (int i = 0; i<4; i++) { output_dwords[i] = keccak_gpu_state[i]; }
-}
-#endif
-
 // bmw32, in(32 bytes), out(32 bytes)
 inline void bmw32_to_global(__global const uint* in_words, __global uint* out_words)
 {
@@ -1474,7 +1680,7 @@ inline void bmw32_to_global(__global const uint* in_words, __global uint* out_wo
 
 
 #ifdef BMW32_ONLY_RETURN_LAST
-inline uint bmw32(__global const uint* in_words)
+inline ulong bmw32(__global const uint* in_words)
 #else
 inline void bmw32(__global const uint* in_words, uint* out_words)
 #endif
@@ -1519,6 +1725,7 @@ inline void bmw32(__global const uint* in_words, uint* out_words)
 #ifdef BMW32_ONLY_RETURN_LAST
 	return Compression256_last(dh, message);
 #else
+	Compression256(dh, message);
 
 	#pragma unroll
 	for (int i=8; i<16; i++) {
@@ -1658,28 +1865,17 @@ inline uint4 hashimoto_mix(uint* headerHash, __global const uint16 *dag, const u
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
 __kernel void search(
 	 __global hash32_t* hashes,
-	__constant uint const* g_header )
+	__constant uint const* g_header,
+  uint isolate)
 {
  	const uint gid = get_global_id(0);
  	__global hash32_t *hash = (__global hash32_t *)(hashes + ((gid % MAX_GLOBAL_THREADS)));
 
-    blake80_noswap(g_header, gid, hash->h4);
-    //if (gid < 8) printf("Nonce[%u] POST-BLAKE80 {0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x}\n", gid,
-	//   blockToHash[0], blockToHash[1], blockToHash[2], blockToHash[3], blockToHash[4], blockToHash[5], blockToHash[6], blockToHash[7]);
+    blakeKeccak80_noswap(g_header, gid, hash->u2, isolate);
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
 __kernel void search1(
-	 __global hash32_t* hashes )
-{
- 	const uint gid = get_global_id(0);
- 	__global hash32_t *hash = (__global hash32_t *)(hashes + ((gid % MAX_GLOBAL_THREADS)));
-	
-    keccak32(hash->h8, hash->h8);
-}
-
-__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search2(
 	 __global hash32_t* hashes )
 {
  	const uint gid = get_global_id(0);
@@ -1689,7 +1885,7 @@ __kernel void search2(
 }
 
 __attribute__((reqd_work_group_size(LYRA_WORKSIZE, 1, 1)))
-__kernel void search3(
+__kernel void search2(
 	 __global hash32_t* hashes,
 	__global ulong4* g_lyre_nodes )
 {
@@ -1703,7 +1899,7 @@ __kernel void search3(
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search4(
+__kernel void search3(
 	 __global hash32_t* hashes )
 {
  	const uint gid = get_global_id(0);
@@ -1713,7 +1909,7 @@ __kernel void search4(
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search5(
+__kernel void search4(
 	 __global hash32_t* hashes )
 {
  	const uint gid = get_global_id(0);
@@ -1723,7 +1919,7 @@ __kernel void search5(
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search6(
+__kernel void search5(
 	 __global hash32_t* hashes )
 {
  	const uint gid = get_global_id(0);
@@ -1734,25 +1930,23 @@ __kernel void search6(
 
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search7(
+__kernel void search6(
 	 __global hash32_t* hashes,
 	__global uint16* const dag,
 	const ulong DAG_ITEM_COUNT,
-	const uint height )
+	const uint height,
+  uint isolate)
 {
  	const uint gid = get_global_id(0);
 	 __global hash32_t *hash = (__global hash32_t *)(hashes + ((gid % MAX_GLOBAL_THREADS)));
 
 	uint blockToHash[13];
+#pragma unroll
 	for (uint i=0; i<8; i++) {
 		blockToHash[i] = hash->h4[i];
 	}
-
-    //if (gid < 8) printf("Nonce[%u] POST-LYRA2RE2 {0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x}\n", gid,
-	//	   blockToHash[0], blockToHash[1], blockToHash[2], blockToHash[3], blockToHash[4], blockToHash[5], blockToHash[6], blockToHash[7]);
-
-    // Mix
-    {
+  // Mix
+  {
 		uint4 mixHash = hashimoto_mix(blockToHash, dag, DAG_ITEM_COUNT);
 		blockToHash[8] = height;
 		blockToHash[9] = mixHash[0];
@@ -1761,23 +1955,12 @@ __kernel void search7(
 		blockToHash[12] = mixHash[3];
 	}
 
-	blake52(blockToHash, hash->h4);
+	blakeKeccak52(blockToHash, hash->u2, isolate);
+	//blake52(blockToHash, hash->h4);
 }
 
-
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search8(
-	 __global hash32_t* hashes )
-{
- 	const uint gid = get_global_id(0);
- 	__global hash32_t *hash = (__global hash32_t *)(hashes + ((gid % MAX_GLOBAL_THREADS)));
-
-    keccak32(hash->h8, hash->h8);
-}
-
-
-__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search9(
+__kernel void search7(
 	 __global hash32_t* hashes )
 {
  	const uint gid = get_global_id(0);
@@ -1788,7 +1971,7 @@ __kernel void search9(
 
 
 __attribute__((reqd_work_group_size(LYRA_WORKSIZE, 1, 1)))
-__kernel void search10(
+__kernel void search8(
 	 __global hash32_t* hashes,
 	__global ulong4* g_lyre_nodes )
 {
@@ -1802,7 +1985,7 @@ __kernel void search10(
 }
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search11(
+__kernel void search9(
 	 __global hash32_t* hashes )
 {
  	const uint gid = get_global_id(0);
@@ -1813,7 +1996,7 @@ __kernel void search11(
 
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search12(
+__kernel void search10(
 	 __global hash32_t* hashes )
 {
  	const uint gid = get_global_id(0);
@@ -1826,10 +2009,10 @@ __kernel void search12(
 #ifndef TEST_KERNEL_HASH
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search13(
+__kernel void search11(
 	 __global hash32_t* hashes,
 	__global volatile uint* restrict g_output,
-	const uint target )
+	const ulong target )
 {
  	const uint gid = get_global_id(0);
 	const uint hash_output_idx = gid;// - get_global_offset(0);
@@ -1837,11 +2020,11 @@ __kernel void search13(
 
 
 #ifdef BMW32_ONLY_RETURN_LAST
-	const uint targetHashCheck = bmw32(hash->h4);
+	const ulong targetHashCheck = bmw32(hash->h4);
 #else
 	uint blockToHash[8];
 	bmw32(hash->h4, blockToHash);
-	const uint targetHashCheck = blockToHash[7];
+	const ulong targetHashCheck = ((ulong*)blockToHash)[3];
 #endif
 
     //if (gid < 8) printf("Nonce[%u] BLOCK {0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x,0x%08x}\n", gid,
@@ -1873,10 +2056,10 @@ __kernel void search13(
 #else
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search13(
+__kernel void search11(
 	 __global hash32_t* hashes,
 	__global volatile uint* restrict g_output,
-	const uint target )
+	const ulong target )
 {
  	const uint gid = get_global_id(0);
 	const uint hash_output_idx = gid - get_global_offset(0);

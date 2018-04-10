@@ -3247,3 +3247,175 @@ bool cg_completion_timeout(void *fn, void *fnarg, int timeout)
   free(cgc);
   return !ret;
 }
+
+
+
+
+static const char b58digits[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+static bool b58dec(unsigned char *bin, size_t binsz, const char *b58)
+{
+	size_t i, j;
+	uint64_t t;
+	uint32_t c;
+	uint32_t *outi;
+	size_t outisz = (binsz + 3) / 4;
+	int rem = binsz % 4;
+	uint32_t remmask = 0xffffffff << (8 * rem);
+	size_t b58sz = strlen(b58);
+	bool rc = false;
+
+	outi = (uint32_t *)calloc(outisz, sizeof(*outi));
+
+	for (i = 0; i < b58sz; ++i) {
+		for (c = 0; b58digits[c] != b58[i]; c++)
+			if (!b58digits[c])
+				goto out;
+		for (j = outisz; j--; ) {
+			t = (uint64_t)outi[j] * 58 + c;
+			c = t >> 32;
+			outi[j] = t & 0xffffffff;
+		}
+		if (c || outi[0] & remmask)
+			goto out;
+	}
+
+	j = 0;
+	switch (rem) {
+	case 3:
+		*(bin++) = (outi[0] >> 16) & 0xff;
+	case 2:
+		*(bin++) = (outi[0] >> 8) & 0xff;
+	case 1:
+		*(bin++) = outi[0] & 0xff;
+		++j;
+	default:
+		break;
+	}
+	for (; j < outisz; ++j) {
+		be32enc((uint32_t *)bin, outi[j]);
+		bin += sizeof(uint32_t);
+	}
+
+	rc = true;
+out:
+	free(outi);
+	return rc;
+}
+
+static const uint32_t sha256_h[8] = {
+	0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+	0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+};
+
+static const uint32_t sha256_k[64] = {
+	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+	0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+	0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+	0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+	0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+	0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+	0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+	0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+	0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+	0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+	0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+	0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+	0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+static void sha256_init(uint32_t *state)
+{
+	memcpy(state, sha256_h, 32);
+}
+
+static const uint32_t sha256d_hash1[16] = {
+	0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	0x80000000, 0x00000000, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0x00000000, 0x00000100
+};
+
+extern void sha256_transform(uint32_t *state, const uint32_t *block, int swap);
+
+static void sha256d(unsigned char *hash, const unsigned char *data, int len)
+{
+	uint32_t S[16], T[16];
+	int i, r;
+
+	sha256_init(S);
+	for (r = len; r > -9; r -= 64) {
+		if (r < 64)
+			memset(T, 0, 64);
+		memcpy(T, data + len - r, r > 64 ? 64 : (r < 0 ? 0 : r));
+		if (r >= 0 && r < 64)
+			((unsigned char *)T)[r] = 0x80;
+		for (i = 0; i < 16; i++)
+			T[i] = be32dec(T + i);
+		if (r < 56)
+			T[15] = 8 * len;
+		sha256_transform(S, T, 0);
+	}
+	memcpy(S + 8, sha256d_hash1 + 8, 32);
+	sha256_init(T);
+	sha256_transform(T, S, 0);
+	for (i = 0; i < 8; i++)
+		be32enc((uint32_t *)hash + i, T[i]);
+}
+
+static int b58check(unsigned char *bin, size_t binsz, const char *b58)
+{
+	unsigned char buf[32];
+	int i;
+
+	sha256d(buf, bin, (int)(binsz - 4));
+	if (memcmp(&bin[binsz - 4], buf, 4))
+		return -1;
+
+	/* Check number of zeros is correct AFTER verifying checksum
+	* (to avoid possibility of accessing the string beyond the end) */
+	for (i = 0; bin[i] == '\0' && b58[i] == '1'; ++i);
+	if (bin[i] == '\0' || b58[i] == '1')
+		return -3;
+
+	return bin[0];
+}
+
+size_t address_to_script(unsigned char *out, size_t outsz, const char *addr)
+{
+	unsigned char addrbin[25];
+	int addrver;
+	size_t rv;
+
+	if (!b58dec(addrbin, sizeof(addrbin), addr))
+		return 0;
+	addrver = b58check(addrbin, sizeof(addrbin), addr);
+	if (addrver < 0)
+		return 0;
+	switch (addrver) {
+	case 5:    /* Bitcoin script hash */
+	case 196:  /* Testnet script hash */
+		if (outsz < (rv = 23))
+			return rv;
+		out[0] = 0xa9;  /* OP_HASH160 */
+		out[1] = 0x14;  /* push 20 bytes */
+		memcpy(&out[2], &addrbin[1], 20);
+		out[22] = 0x87;  /* OP_EQUAL */
+		return rv;
+	default:
+		if (outsz < (rv = 25))
+			return rv;
+		out[0] = 0x76;  /* OP_DUP */
+		out[1] = 0xa9;  /* OP_HASH160 */
+		out[2] = 0x14;  /* push 20 bytes */
+		memcpy(&out[3], &addrbin[1], 20);
+		out[23] = 0x88;  /* OP_EQUALVERIFY */
+		out[24] = 0xac;  /* OP_CHECKSIG */
+		return rv;
+	}
+}
+
+

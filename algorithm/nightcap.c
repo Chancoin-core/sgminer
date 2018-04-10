@@ -215,7 +215,7 @@ void test_hashimoto(uint32_t height, uint32_t gid)
 	uint64_t cache_size = nightcap_get_cache_size(height);
 	uint64_t full_size = nightcap_get_full_size(height);
 
-	memset(endiandata, '\0', sizeof(endiandata));
+	memset(endiandata, 255, sizeof(endiandata));
 	endiandata[19] = gid;
 
 	cg_rlock(&EthCacheLock[idx]);
@@ -264,6 +264,13 @@ void nightcap_regenhash(struct work *work)
 	struct CHashimotoResult res = light_hashimoto((uint8_t*)endiandata, (uint32_t*)(EthCache[idx] + 32), cache_size, full_size, work->HeightNumber);
 
 	cg_runlock(&EthCacheLock[idx]);
+
+	// Need this at the end of data
+	be32enc(&pdata[20], res.cmix[0]);
+	be32enc(&pdata[21], res.cmix[1]);
+	be32enc(&pdata[22], res.cmix[2]);
+	be32enc(&pdata[23], res.cmix[3]);
+	be32enc(&pdata[24], work->HeightNumber);
 
 	memcpy(work->hash, res.result, 32);
 
