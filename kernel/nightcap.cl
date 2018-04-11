@@ -8,6 +8,7 @@
 #ifndef WORKSIZE
 #define WORKSIZE 256
 #define COMPILE_MAIN_ONLY
+#define PRECALC_BLAKE
 #endif
 
 #ifndef MAX_GLOBAL_THREADS
@@ -19,7 +20,6 @@
 #define ACCESSES   64
 #define MAX_OUTPUTS 255u
 #define barrier(x) mem_fence(x)
-
 
 #define WORD_BYTES 4
 #define DATASET_BYTES_INIT 536870912
@@ -38,20 +38,16 @@
 #define MAX_NONCE_OUTPUTS 255
 #define MAX_HASH_OUTPUTS  256
 
-// DAG Cache node
 typedef union _Node
 {
 	uint dwords[8];
 	uint4 dqwords[2];
-} Node; // NOTE: should be HASH_BYTES long
-
+} Node;
 
 typedef union _MixNodes {
 	uint values[16];
-	uint8 nodes8[2];
 	uint16 nodes16;
 } MixNodes;
-
 
 // Output hash
 typedef union {
@@ -59,9 +55,6 @@ typedef union {
 	uint h4[8];
 	ulong h8[4];
 } hash32_t;
-
-//#define fnv(x, y) ((x) * FNV_PRIME ^ (y)) % (0xffffffff)
-//#define fnv_reduce(v) fnv(fnv(fnv(v.x, v.y), v.z), v.w)
 
 inline uint fnv(const uint v1, const uint v2) {
 	return ((v1 * FNV_PRIME) ^ v2) % (0xffffffff);
@@ -157,7 +150,6 @@ __constant static const uint  c_u256[16] = {
 #define SPH_T64(x) (as_ulong(x))
 #define SPH_ROTL64(x, n) rotate(as_ulong(x), (n) & 0xFFFFFFFFFFFFFFFFUL)
 #define SPH_ROTR64(x, n)   SPH_ROTL64(x, (64 - (n)))
-
 
 #define sph_bswap32(n) (rotate(n & 0x00FF00FF, 24U)|(rotate(n, 8U) & 0x00FF00FF))
 
@@ -279,9 +271,11 @@ M[0xD] = b13; \
 M[0xE] = b14; \
 M[0xF] = b15;
 
+
 // Begin compress state with standard blake values from INIT_BLAKE_STATE
 #define BLAKE256_COMPRESS_BEGIN_LIGHT(T0, T1, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15) \
 BLAKE256_COMPRESS_BEGIN_DIRECT(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19), T0, T1, b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15)
+
 
 #define BLAKE256_COMPRESS_END \
 H0 ^= V[0] ^ V[8]; \
@@ -292,6 +286,8 @@ H4 ^= V[4] ^ V[12]; \
 H5 ^= V[5] ^ V[13]; \
 H6 ^= V[6] ^ V[14]; \
 H7 ^= V[7] ^ V[15];
+
+
 
 #define BLAKE256_COMPRESS_END_DIRECT(H0, H1, H2, H3, H4, H5, H6, H7, OUT_H0, OUT_H1, OUT_H2, OUT_H3, OUT_H4, OUT_H5, OUT_H6, OUT_H7) \
 OUT_H0 = sph_bswap32(H0 ^ (V[0] ^ V[8])); \
@@ -318,6 +314,7 @@ BLAKE256_COMPRESS_END_DIRECT(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0
 
 #define BLAKE256_COMPRESS_END_LIGHT_NOSWAP(OUT_H0, OUT_H1, OUT_H2, OUT_H3, OUT_H4, OUT_H5, OUT_H6, OUT_H7) \
 BLAKE256_COMPRESS_END_DIRECT_NOSWAP(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19), OUT_H0, OUT_H1, OUT_H2, OUT_H3, OUT_H4, OUT_H5, OUT_H6, OUT_H7)
+
 
 #define BLAKE256_COMPRESS32(b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15) \
 V[0] = H0; \
@@ -352,7 +349,7 @@ M[0xC] = b12; \
 M[0xD] = b13; \
 M[0xE] = b14; \
 M[0xF] = b15; \
-for (uint R=0; R< BLAKE32_ROUNDS; R++) { \
+for (uint R=0; R< 14; R++) { \
 		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0); \
 		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2); \
 		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4); \
@@ -375,7 +372,6 @@ H7 ^= V[7] ^ V[15];
 // END BLAKE256
 //
 
-
 //
 // BEGIN KECCAK32
 //
@@ -395,78 +391,9 @@ __constant static const ulong RC[] = {
   SPH_C64(0x0000000080000001), SPH_C64(0x8000000080008008)
 };
 
-
-inline void keccak_block(ulong *s) {
-	ulong t[5], u[5], v, w;
-
-	for (uint i = 0; i < 24; i++) {
-		/* theta: c = a[0,i] ^ a[1,i] ^ .. a[4,i] */
-		t[0] = s[0] ^ s[5] ^ s[10] ^ s[15] ^ s[20];
-		t[1] = s[1] ^ s[6] ^ s[11] ^ s[16] ^ s[21];
-		t[2] = s[2] ^ s[7] ^ s[12] ^ s[17] ^ s[22];
-		t[3] = s[3] ^ s[8] ^ s[13] ^ s[18] ^ s[23];
-		t[4] = s[4] ^ s[9] ^ s[14] ^ s[19] ^ s[24];
-
-		/* theta: d[i] = c[i+4] ^ rotl(c[i+1],1) */
-		u[0] = t[4] ^ SPH_ROTL64(t[1], 1);
-		u[1] = t[0] ^ SPH_ROTL64(t[2], 1);
-		u[2] = t[1] ^ SPH_ROTL64(t[3], 1);
-		u[3] = t[2] ^ SPH_ROTL64(t[4], 1);
-		u[4] = t[3] ^ SPH_ROTL64(t[0], 1);
-
-		/* theta: a[0,i], a[1,i], .. a[4,i] ^= d[i] */
-		s[0] ^= u[0]; s[5] ^= u[0]; s[10] ^= u[0]; s[15] ^= u[0]; s[20] ^= u[0];
-		s[1] ^= u[1]; s[6] ^= u[1]; s[11] ^= u[1]; s[16] ^= u[1]; s[21] ^= u[1];
-		s[2] ^= u[2]; s[7] ^= u[2]; s[12] ^= u[2]; s[17] ^= u[2]; s[22] ^= u[2];
-		s[3] ^= u[3]; s[8] ^= u[3]; s[13] ^= u[3]; s[18] ^= u[3]; s[23] ^= u[3];
-		s[4] ^= u[4]; s[9] ^= u[4]; s[14] ^= u[4]; s[19] ^= u[4]; s[24] ^= u[4];
-
-		/* rho pi: b[..] = rotl(a[..], ..) */
-		v = s[1];
-		s[1] = SPH_ROTL64(s[6], 44);
-		s[6] = SPH_ROTL64(s[9], 20);
-		s[9] = SPH_ROTL64(s[22], 61);
-		s[22] = SPH_ROTL64(s[14], 39);
-		s[14] = SPH_ROTL64(s[20], 18);
-		s[20] = SPH_ROTL64(s[2], 62);
-		s[2] = SPH_ROTL64(s[12], 43);
-		s[12] = SPH_ROTL64(s[13], 25);
-		s[13] = SPH_ROTL64(s[19], 8);
-		s[19] = SPH_ROTL64(s[23], 56);
-		s[23] = SPH_ROTL64(s[15], 41);
-		s[15] = SPH_ROTL64(s[4], 27);
-		s[4] = SPH_ROTL64(s[24], 14);
-		s[24] = SPH_ROTL64(s[21], 2);
-		s[21] = SPH_ROTL64(s[8], 55);
-		s[8] = SPH_ROTL64(s[16], 45);
-		s[16] = SPH_ROTL64(s[5], 36);
-		s[5] = SPH_ROTL64(s[3], 28);
-		s[3] = SPH_ROTL64(s[18], 21);
-		s[18] = SPH_ROTL64(s[17], 15);
-		s[17] = SPH_ROTL64(s[11], 10);
-		s[11] = SPH_ROTL64(s[7], 6);
-		s[7] = SPH_ROTL64(s[10], 3);
-		s[10] = SPH_ROTL64(v, 1);
-
-		v = s[0]; w = s[1]; s[0] ^= (~w) & s[2]; s[1] ^= (~s[2]) & s[3]; s[2] ^= (~s[3]) & s[4]; s[3] ^= (~s[4]) & v; s[4] ^= (~v) & w;
-		v = s[5]; w = s[6]; s[5] ^= (~w) & s[7]; s[6] ^= (~s[7]) & s[8]; s[7] ^= (~s[8]) & s[9]; s[8] ^= (~s[9]) & v; s[9] ^= (~v) & w;
-		v = s[10]; w = s[11]; s[10] ^= (~w) & s[12]; s[11] ^= (~s[12]) & s[13]; s[12] ^= (~s[13]) & s[14]; s[13] ^= (~s[14]) & v; s[14] ^= (~v) & w;
-		v = s[15]; w = s[16]; s[15] ^= (~w) & s[17]; s[16] ^= (~s[17]) & s[18]; s[17] ^= (~s[18]) & s[19]; s[18] ^= (~s[19]) & v; s[19] ^= (~v) & w;
-		v = s[20]; w = s[21]; s[20] ^= (~w) & s[22]; s[21] ^= (~s[22]) & s[23]; s[22] ^= (~s[23]) & s[24]; s[23] ^= (~s[24]) & v; s[24] ^= (~v) & w;
-
-		s[0] ^= RC[i];
-	}
-};
-
-//
-// END KECCAK32
-//
-
-
 //
 // BEGIN SKEIN256
 //
-
 
 __constant static const ulong SKEIN_IV512[] = {
   SPH_C64(0x4903ADFF749C51CE), SPH_C64(0x0D95DE399746DF03),
@@ -503,7 +430,6 @@ __constant static const ulong t12[6] =
 0xff00000000000000UL,
 0xff00000000000008UL
 };
-
 
 #define Round512(p0,p1,p2,p3,p4,p5,p6,p7,ROT)  { \
 p0 += p1; p1 = SPH_ROTL64(p1, ROT256[ROT][0]);  p1 ^= p0; \
@@ -547,10 +473,10 @@ p6 += p7; p7 = SPH_ROTL64(p7, ROT256[ROT][3]);  p7 ^= p6; \
 // BEGIN BMW
 //
 
-
 #define shl(x, n)            ((x) << (n))
 #define shr(x, n)            ((x) >> (n))
-
+//#define SHR(x, n) SHR2(x, n) 
+//#define SHL(x, n) SHL2(x, n) 
 
 #define ss0(x)  (shr((x), 1) ^ shl((x), 3) ^ SPH_ROTL32((x),  4) ^ SPH_ROTL32((x), 19))
 #define ss1(x)  (shr((x), 1) ^ shl((x), 2) ^ SPH_ROTL32((x),  8) ^ SPH_ROTL32((x), 23))
@@ -567,7 +493,7 @@ p6 += p7; p7 = SPH_ROTL64(p7, ROT256[ROT][3]);  p7 ^= p6; \
 #define rs7(x) SPH_ROTL32((x), 27)
 
 /* Message expansion function 1 */
-inline uint expand32_1(int i, const uint *M32, const uint *H, const uint *Q)
+uint expand32_1(int i, const uint *M32, const uint *H, const uint *Q)
 {
 
 	return (ss1(Q[i - 16]) + ss2(Q[i - 15]) + ss3(Q[i - 14]) + ss0(Q[i - 13])
@@ -579,7 +505,7 @@ inline uint expand32_1(int i, const uint *M32, const uint *H, const uint *Q)
 }
 
 /* Message expansion function 2 */
-inline uint expand32_2(int i, const uint *M32, const uint *H, const uint *Q)
+uint expand32_2(int i, const uint *M32, const uint *H, const uint *Q)
 {
 
 	return (Q[i - 16] + rs1(Q[i - 15]) + Q[i - 14] + rs2(Q[i - 13])
@@ -590,99 +516,12 @@ inline uint expand32_2(int i, const uint *M32, const uint *H, const uint *Q)
 
 }
 
-inline void Compression256(const uint *M32, uint *H, uint *Q)
-{
-	uint XL32, XH32;
-
-
-	Q[0] = (M32[5] ^ H[5]) - (M32[7] ^ H[7]) + (M32[10] ^ H[10]) + (M32[13] ^ H[13]) + (M32[14] ^ H[14]);
-	Q[1] = (M32[6] ^ H[6]) - (M32[8] ^ H[8]) + (M32[11] ^ H[11]) + (M32[14] ^ H[14]) - (M32[15] ^ H[15]);
-	Q[2] = (M32[0] ^ H[0]) + (M32[7] ^ H[7]) + (M32[9] ^ H[9]) - (M32[12] ^ H[12]) + (M32[15] ^ H[15]);
-	Q[3] = (M32[0] ^ H[0]) - (M32[1] ^ H[1]) + (M32[8] ^ H[8]) - (M32[10] ^ H[10]) + (M32[13] ^ H[13]);
-	Q[4] = (M32[1] ^ H[1]) + (M32[2] ^ H[2]) + (M32[9] ^ H[9]) - (M32[11] ^ H[11]) - (M32[14] ^ H[14]);
-	Q[5] = (M32[3] ^ H[3]) - (M32[2] ^ H[2]) + (M32[10] ^ H[10]) - (M32[12] ^ H[12]) + (M32[15] ^ H[15]);
-	Q[6] = (M32[4] ^ H[4]) - (M32[0] ^ H[0]) - (M32[3] ^ H[3]) - (M32[11] ^ H[11]) + (M32[13] ^ H[13]);
-	Q[7] = (M32[1] ^ H[1]) - (M32[4] ^ H[4]) - (M32[5] ^ H[5]) - (M32[12] ^ H[12]) - (M32[14] ^ H[14]);
-	Q[8] = (M32[2] ^ H[2]) - (M32[5] ^ H[5]) - (M32[6] ^ H[6]) + (M32[13] ^ H[13]) - (M32[15] ^ H[15]);
-	Q[9] = (M32[0] ^ H[0]) - (M32[3] ^ H[3]) + (M32[6] ^ H[6]) - (M32[7] ^ H[7]) + (M32[14] ^ H[14]);
-	Q[10] = (M32[8] ^ H[8]) - (M32[1] ^ H[1]) - (M32[4] ^ H[4]) - (M32[7] ^ H[7]) + (M32[15] ^ H[15]);
-	Q[11] = (M32[8] ^ H[8]) - (M32[0] ^ H[0]) - (M32[2] ^ H[2]) - (M32[5] ^ H[5]) + (M32[9] ^ H[9]);
-	Q[12] = (M32[1] ^ H[1]) + (M32[3] ^ H[3]) - (M32[6] ^ H[6]) - (M32[9] ^ H[9]) + (M32[10] ^ H[10]);
-	Q[13] = (M32[2] ^ H[2]) + (M32[4] ^ H[4]) + (M32[7] ^ H[7]) + (M32[10] ^ H[10]) + (M32[11] ^ H[11]);
-	Q[14] = (M32[3] ^ H[3]) - (M32[5] ^ H[5]) + (M32[8] ^ H[8]) - (M32[11] ^ H[11]) - (M32[12] ^ H[12]);
-	Q[15] = (M32[12] ^ H[12]) - (M32[4] ^ H[4]) - (M32[6] ^ H[6]) - (M32[9] ^ H[9]) + (M32[13] ^ H[13]);
-
-	/*  Diffuse the differences in every word in a bijective manner with ssi, and then add the values of the previous double pipe.*/
-	Q[0] = ss0(Q[0]) + H[1];
-	Q[1] = ss1(Q[1]) + H[2];
-	Q[2] = ss2(Q[2]) + H[3];
-	Q[3] = ss3(Q[3]) + H[4];
-	Q[4] = ss4(Q[4]) + H[5];
-	Q[5] = ss0(Q[5]) + H[6];
-	Q[6] = ss1(Q[6]) + H[7];
-	Q[7] = ss2(Q[7]) + H[8];
-	Q[8] = ss3(Q[8]) + H[9];
-	Q[9] = ss4(Q[9]) + H[10];
-	Q[10] = ss0(Q[10]) + H[11];
-	Q[11] = ss1(Q[11]) + H[12];
-	Q[12] = ss2(Q[12]) + H[13];
-	Q[13] = ss3(Q[13]) + H[14];
-	Q[14] = ss4(Q[14]) + H[15];
-	Q[15] = ss0(Q[15]) + H[0];
-
-	/* This is the Message expansion or f_1 in the documentation.       */
-	/* It has 16 rounds.                                                */
-	/* Blue Midnight Wish has two tunable security parameters.          */
-	/* The parameters are named EXPAND_1_ROUNDS and EXPAND_2_ROUNDS.    */
-	/* The following relation for these parameters should is satisfied: */
-	/* EXPAND_1_ROUNDS + EXPAND_2_ROUNDS = 16                           */
-#pragma unroll
-	for (uint i = 0; i<2; i++)
-		Q[i + 16] = expand32_1(i + 16, M32, H, Q);
-
-#pragma unroll
-	for (uint i = 2; i<16; i++)
-		Q[i + 16] = expand32_2(i + 16, M32, H, Q);
-
-	/* Blue Midnight Wish has two temporary cummulative variables that accumulate via XORing */
-	/* 16 new variables that are prooduced in the Message Expansion part.                    */
-	XL32 = Q[16] ^ Q[17] ^ Q[18] ^ Q[19] ^ Q[20] ^ Q[21] ^ Q[22] ^ Q[23];
-	XH32 = XL32^Q[24] ^ Q[25] ^ Q[26] ^ Q[27] ^ Q[28] ^ Q[29] ^ Q[30] ^ Q[31];
-
-
-	/*  This part is the function f_2 - in the documentation            */
-
-	/*  Compute the double chaining pipe for the next message block.    */
-	H[0] = (shl(XH32, 5) ^ shr(Q[16], 5) ^ M32[0]) + (XL32    ^ Q[24] ^ Q[0]);
-	H[1] = (shr(XH32, 7) ^ shl(Q[17], 8) ^ M32[1]) + (XL32    ^ Q[25] ^ Q[1]);
-	H[2] = (shr(XH32, 5) ^ shl(Q[18], 5) ^ M32[2]) + (XL32    ^ Q[26] ^ Q[2]);
-	H[3] = (shr(XH32, 1) ^ shl(Q[19], 5) ^ M32[3]) + (XL32    ^ Q[27] ^ Q[3]);
-	H[4] = (shr(XH32, 3) ^ Q[20] ^ M32[4]) + (XL32    ^ Q[28] ^ Q[4]);
-	H[5] = (shl(XH32, 6) ^ shr(Q[21], 6) ^ M32[5]) + (XL32    ^ Q[29] ^ Q[5]);
-	H[6] = (shr(XH32, 4) ^ shl(Q[22], 6) ^ M32[6]) + (XL32    ^ Q[30] ^ Q[6]);
-	H[7] = (shr(XH32, 11) ^ shl(Q[23], 2) ^ M32[7]) + (XL32    ^ Q[31] ^ Q[7]);
-
-	H[8] = SPH_ROTL32(H[4], 9) + (XH32     ^     Q[24] ^ M32[8]) + (shl(XL32, 8) ^ Q[23] ^ Q[8]);
-	H[9] = SPH_ROTL32(H[5], 10) + (XH32     ^     Q[25] ^ M32[9]) + (shr(XL32, 6) ^ Q[16] ^ Q[9]);
-	H[10] = SPH_ROTL32(H[6], 11) + (XH32     ^     Q[26] ^ M32[10]) + (shl(XL32, 6) ^ Q[17] ^ Q[10]);
-	H[11] = SPH_ROTL32(H[7], 12) + (XH32     ^     Q[27] ^ M32[11]) + (shl(XL32, 4) ^ Q[18] ^ Q[11]);
-	H[12] = SPH_ROTL32(H[0], 13) + (XH32     ^     Q[28] ^ M32[12]) + (shr(XL32, 3) ^ Q[19] ^ Q[12]);
-	H[13] = SPH_ROTL32(H[1], 14) + (XH32     ^     Q[29] ^ M32[13]) + (shr(XL32, 4) ^ Q[20] ^ Q[13]);
-	H[14] = SPH_ROTL32(H[2], 15) + (XH32     ^     Q[30] ^ M32[14]) + (shr(XL32, 7) ^ Q[21] ^ Q[14]);
-	H[15] = SPH_ROTL32(H[3], 16) + (XH32     ^     Q[31] ^ M32[15]) + (shr(XL32, 2) ^ Q[22] ^ Q[15]);
-}
-
-//
-// END BMW
-//
-
-
 //
 // BEGIN CUBEHASH
 //
 
 #if !defined SPH_CUBEHASH_UNROLL
-#define SPH_CUBEHASH_UNROLL   0
+#define SPH_CUBEHASH_UNROLL   8
 #endif
 
 __constant static const uint CUBEHASH_IV512[] = {
@@ -973,677 +812,53 @@ __constant static const uint CUBEHASH_IV512[] = {
 // END CUBEHASH
 //
 
-//
-// BEGIN LYRA
-//
-
-
-// LYRA2 PREPROCESSOR MACROS
-
-
-// replicate build env
-#define LYRA_SCRATCHBUF_SIZE 1536
-#define memshift 3
-
-
 // opencl versions
 #define ROTL64(x,n) rotate(x,(ulong)n)
 #define ROTR64(x,n) rotate(x,(ulong)(64-n))
 #define SWAP32(x) as_ulong(as_uint2(x).s10)
-#define SPH_ULONG4(a, b, c, d) (ulong4)(a, b, c, d)
-
+//#define ROTL64(x,n) SPH_ROTL64(x, n)
+//#define ROTR64(x,n) SPH_ROTR64(x, n)
+//#define SWAP32(x) sph_bswap32(x)
 
 /*One Round of the Blake2b's compression function*/
-
-#define G_old(a,b,c,d) \
-  do { \
-	a += b; d ^= a; d = ROTR64(d, 32); \
-	c += d; b ^= c; b = ROTR64(b, 24); \
-	a += b; d ^= a; d = ROTR64(d, 16); \
-	c += d; b ^= c; b = ROTR64(b, 63); \
-\
-  } while (0)
-
 #define round_lyra(s)  \
  do { \
-	 G_old(s[0].x, s[1].x, s[2].x, s[3].x); \
-     G_old(s[0].y, s[1].y, s[2].y, s[3].y); \
-     G_old(s[0].z, s[1].z, s[2].z, s[3].z); \
-     G_old(s[0].w, s[1].w, s[2].w, s[3].w); \
-     G_old(s[0].x, s[1].y, s[2].z, s[3].w); \
-     G_old(s[0].y, s[1].z, s[2].w, s[3].x); \
-     G_old(s[0].z, s[1].w, s[2].x, s[3].y); \
-     G_old(s[0].w, s[1].x, s[2].y, s[3].z); \
+        s[0].x += s[1].x; s[3].x ^= s[0].x; s[3].x = ROTR64(s[3].x, 32); \
+        s[2].x += s[3].x; s[1].x ^= s[2].x; s[1].x = ROTR64(s[1].x, 24); \
+        s[0].x += s[1].x; s[3].x ^= s[0].x; s[3].x = ROTR64(s[3].x, 16); \
+        s[2].x += s[3].x; s[1].x ^= s[2].x; s[1].x = ROTR64(s[1].x, 63); \
+        s[0].y += s[1].y; s[3].y ^= s[0].y; s[3].y = ROTR64(s[3].y, 32); \
+        s[2].y += s[3].y; s[1].y ^= s[2].y; s[1].y = ROTR64(s[1].y, 24); \
+        s[0].y += s[1].y; s[3].y ^= s[0].y; s[3].y = ROTR64(s[3].y, 16); \
+        s[2].y += s[3].y; s[1].y ^= s[2].y; s[1].y = ROTR64(s[1].y, 63); \
+        s[0].z += s[1].z; s[3].z ^= s[0].z; s[3].z = ROTR64(s[3].z, 32); \
+        s[2].z += s[3].z; s[1].z ^= s[2].z; s[1].z = ROTR64(s[1].z, 24); \
+        s[0].z += s[1].z; s[3].z ^= s[0].z; s[3].z = ROTR64(s[3].z, 16); \
+        s[2].z += s[3].z; s[1].z ^= s[2].z; s[1].z = ROTR64(s[1].z, 63); \
+        s[0].w += s[1].w; s[3].w ^= s[0].w; s[3].w = ROTR64(s[3].w, 32); \
+        s[2].w += s[3].w; s[1].w ^= s[2].w; s[1].w = ROTR64(s[1].w, 24); \
+        s[0].w += s[1].w; s[3].w ^= s[0].w; s[3].w = ROTR64(s[3].w, 16); \
+        s[2].w += s[3].w; s[1].w ^= s[2].w; s[1].w = ROTR64(s[1].w, 63); \
+        s[0].x += s[1].y; s[3].w ^= s[0].x; s[3].w = ROTR64(s[3].w, 32); \
+        s[2].z += s[3].w; s[1].y ^= s[2].z; s[1].y = ROTR64(s[1].y, 24); \
+        s[0].x += s[1].y; s[3].w ^= s[0].x; s[3].w = ROTR64(s[3].w, 16); \
+        s[2].z += s[3].w; s[1].y ^= s[2].z; s[1].y = ROTR64(s[1].y, 63); \
+        s[0].y += s[1].z; s[3].x ^= s[0].y; s[3].x = ROTR64(s[3].x, 32); \
+        s[2].w += s[3].x; s[1].z ^= s[2].w; s[1].z = ROTR64(s[1].z, 24); \
+        s[0].y += s[1].z; s[3].x ^= s[0].y; s[3].x = ROTR64(s[3].x, 16); \
+        s[2].w += s[3].x; s[1].z ^= s[2].w; s[1].z = ROTR64(s[1].z, 63); \
+        s[0].z += s[1].w; s[3].y ^= s[0].z; s[3].y = ROTR64(s[3].y, 32); \
+        s[2].x += s[3].y; s[1].w ^= s[2].x; s[1].w = ROTR64(s[1].w, 24); \
+        s[0].z += s[1].w; s[3].y ^= s[0].z; s[3].y = ROTR64(s[3].y, 16); \
+        s[2].x += s[3].y; s[1].w ^= s[2].x; s[1].w = ROTR64(s[1].w, 63); \
+        s[0].w += s[1].x; s[3].z ^= s[0].w; s[3].z = ROTR64(s[3].z, 32); \
+        s[2].y += s[3].z; s[1].x ^= s[2].y; s[1].x = ROTR64(s[1].x, 24); \
+        s[0].w += s[1].x; s[3].z ^= s[0].w; s[3].z = ROTR64(s[3].z, 16); \
+        s[2].y += s[3].z; s[1].x ^= s[2].y; s[1].x = ROTR64(s[1].x, 63); \
  } while(0)
 
-#define G(a,b,c,d) \
-  do { \
-	a += b; d ^= a; d = SWAP32(d); \
-	c += d; b ^= c; b = round_lyra(b,24); \
-	a += b; d ^= a; d = ROTR64(d,16); \
-	c += d; b ^= c; b = ROTR64(b, 63); \
-\
-  } while (0)
-
-
-inline void reduceDuplexf(ulong4 *state1, ulong4* state , __global ulong4* DMatrix)
-{
-	const uint ps1 = 0;
-	const uint ps2 = (memshift * 3 + memshift * 4);
-//#pragma unroll 4
-	for (int i = 0; i < 4; i++)
-	{
-		 const uint s1 = ps1 + i*memshift;
-		 const uint s2 = ps2 - i*memshift;
-
-		 for (int j = 0; j < 3; j++)  state1[j] = (DMatrix)[j + s1];
-		 for (int j = 0; j < 3; j++)  state[j] ^= state1[j];
-
-		 round_lyra(state);
-
-		 for (int j = 0; j < 3; j++)  state1[j] ^= state[j];
-		 for (int j = 0; j < 3; j++)  (DMatrix)[j + s2] = state1[j];
-	}
-}
-
-inline void reduceDuplexRowf(ulong4 *state1, ulong4* state2, uint rowIn,uint rowInOut,uint rowOut,ulong4 * state, __global ulong4 * DMatrix)
-{
-	const uint ps1 = (memshift * 4 * rowIn);
-	const uint ps2 = (memshift * 4 * rowInOut);
-	const uint ps3 = (memshift * 4 * rowOut);
-
-	for (int i = 0; i < 4; i++)
-	{
-		const uint s1 = ps1 + i*memshift;
-		const uint s2 = ps2 + i*memshift;
-		const uint s3 = ps3 + i*memshift;
-
-		for (int j = 0; j < 3; j++)   state1[j] = (DMatrix)[j + s1];
-		for (int j = 0; j < 3; j++)   state2[j] = (DMatrix)[j + s2];
-		for (int j = 0; j < 3; j++)   state1[j] += state2[j];
-		for (int j = 0; j < 3; j++)   state[j] ^= state1[j];
-
-		round_lyra(state);
-
-		((ulong*)state2)[0] ^= ((ulong*)state)[11];
-		for (int j = 0; j < 11; j++)
-		{
-			((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];
-		}
-
-		if (rowInOut != rowOut) {
-			for (int j = 0; j < 3; j++) { (DMatrix)[j + s2] = state2[j]; }
-			for (int j = 0; j < 3; j++) { (DMatrix)[j + s3] ^= state[j]; }
-		} else {
-			for (int j = 0; j < 3; j++) { state2[j] ^= state[j]; }
-			for (int j = 0; j < 3; j++) { (DMatrix)[j + s2] = state2[j]; }
-		}
-	}
-}
-
-inline void reduceDuplexRowSetupf(ulong4 *state1, ulong4 *state2, uint rowIn, uint rowInOut, uint rowOut, ulong4 *state,  __global ulong4* DMatrix)
-{
-	 uint ps1 = (memshift * 4 * rowIn);
-	 uint ps2 = (memshift * 4 * rowInOut);
-	 uint ps3 = (memshift * 3 + memshift * 4 * rowOut);
-
-	 for (int i = 0; i < 4; i++)
-	 {
-		 uint s1 = ps1 + i*memshift;
-		 uint s2 = ps2 + i*memshift;
-		 uint s3 = ps3 - i*memshift;
-
-		 for (int j = 0; j < 3; j++)  state1[j] = (DMatrix)[j + s1];
-
-		 for (int j = 0; j < 3; j++)  state2[j] = (DMatrix)[j + s2];
-		 for (int j = 0; j < 3; j++) {
-			 ulong4 tmp = state1[j] + state2[j];
-			 state[j] ^= tmp;
-		 		 }
-		 round_lyra(state);
-
-		 for (int j = 0; j < 3; j++) {
-			 state1[j] ^= state[j];
-			 (DMatrix)[j + s3] = state1[j];
-		 		 }
-
-		 ((ulong*)state2)[0] ^= ((ulong*)state)[11];
-		 for (int j = 0; j < 11; j++)
-			 ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];
-		 for (int j = 0; j < 3; j++)
-			 (DMatrix)[j + s2] = state2[j];
-	 }
-}
-
-// END LYRA2 PREPROCESSOR MACROS
-
-//
-// END LYRA
-//
-
-
-//#define DEBUG
-
-
-// Hash helper functions
-
-// blake80, in(80 bytes), out(32 bytes)
-inline void blake80_noswap(__constant const uint* in_header, uint gid, uint* out_words)
-{
-	BLAKE256_COMPRESS32_STATE;
-
-#ifndef PRECALC_BLAKE
-	// Input == input words, already byteswapped
-	BLAKE256_COMPRESS_BEGIN_DIRECT(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
-		512, 0, (in_header[0]),(in_header[1]),(in_header[2]),(in_header[3]),(in_header[4]),(in_header[5]),(in_header[6]),(in_header[7]),(in_header[8]),(in_header[9]),(in_header[10]),(in_header[11]),(in_header[12]),(in_header[13]),(in_header[14]),(in_header[15]));
-#pragma unroll 
-	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
-		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
-		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
-		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
-		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
-		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
-		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
-		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
-		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
-	}
-	uint H[8]; // thread H values
-	BLAKE256_COMPRESS_END_DIRECT_NOSWAP(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
-		                                H[0], H[1], H[2], H[3], H[4], H[5], H[6], H[7]);
-#else
-	uint H[8]; // thread H values
-	#pragma unroll
-	for (uint i=0; i<8; i++) { H[i] = in_header[i]; }
-#endif
-
-	// NOTE: At this stage, H[0...7] contains the previous state of the blake hash so we can continue on similarly to before
-
-	BLAKE256_COMPRESS_BEGIN_DIRECT(H[0], H[1], H[2], H[3], H[4], H[5], H[6], H[7], 640, 0, 
-		                          (in_header[16]),(in_header[17]),(in_header[18]),gid,2147483648,0,0,0,0,0,0,0,0,1,0,640);
-#pragma unroll 
-	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
-		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
-		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
-		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
-		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
-		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
-		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
-		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
-		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
-	}
-	BLAKE256_COMPRESS_END_DIRECT_NOSWAP(H[0], H[1], H[2], H[3], H[4], H[5], H[6], H[7], 
-		                         out_words[0], out_words[1], out_words[2], out_words[3], out_words[4], out_words[5], out_words[6], out_words[7]);
-
-	out_words[0] = sph_bswap32(out_words[0]);
-	out_words[1] = sph_bswap32(out_words[1]);
-	out_words[2] = sph_bswap32(out_words[2]);
-	out_words[3] = sph_bswap32(out_words[3]);
-	out_words[4] = sph_bswap32(out_words[4]);
-	out_words[5] = sph_bswap32(out_words[5]);
-	out_words[6] = sph_bswap32(out_words[6]);
-	out_words[7] = sph_bswap32(out_words[7]);
-}
-
-// blake80, in(52 bytes), out(32 bytes)
-inline void blake52(const uint* input_words, uint* out_words)
-{
-	BLAKE256_COMPRESS32_STATE;
-
-	BLAKE256_COMPRESS_BEGIN_DIRECT(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
-		SPH_C32(0x1a0), SPH_C32(0x0), sph_bswap32(input_words[0]),sph_bswap32(input_words[1]),sph_bswap32(input_words[2]),sph_bswap32(input_words[3]),sph_bswap32(input_words[4]),sph_bswap32(input_words[5]),sph_bswap32(input_words[6]),sph_bswap32(input_words[7]),sph_bswap32(input_words[8]),sph_bswap32(input_words[9]),sph_bswap32(input_words[10]),sph_bswap32(input_words[11]),sph_bswap32(input_words[12]),2147483649,0,416);
-
-    #pragma unroll 
-	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
-		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
-		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
-		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
-		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
-		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
-		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
-		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
-		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
-	}
-	BLAKE256_COMPRESS_END_DIRECT_NOSWAP(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19), out_words[0], out_words[1], out_words[2], out_words[3], out_words[4], out_words[5], out_words[6], out_words[7]);
-
-	out_words[0] = sph_bswap32(out_words[0]);
-	out_words[1] = sph_bswap32(out_words[1]);
-	out_words[2] = sph_bswap32(out_words[2]);
-	out_words[3] = sph_bswap32(out_words[3]);
-	out_words[4] = sph_bswap32(out_words[4]);
-	out_words[5] = sph_bswap32(out_words[5]);
-	out_words[6] = sph_bswap32(out_words[6]);
-	out_words[7] = sph_bswap32(out_words[7]);
-}
-
-
-// skein32, in(32 bytes), out(32 bytes)
-inline void skein32(const ulong* in_dwords, ulong* out_dwords)
-{
-	//printf("skein32 in=%s\n", debug_print_hash(in_dwords));
-
-	ulong h[9];
-	ulong t[3];
-	ulong dt0,dt1,dt2,dt3;
-	ulong p0, p1, p2, p3, p4, p5, p6, p7;
-	h[8] = skein_ks_parity;
-
-	for (int i = 0; i<8; i++) {
-		h[i] = SKEIN_IV512_256[i];
-		h[8] ^= h[i];
-	}
-
-	t[0]=t12[0];
-	t[1]=t12[1];
-	t[2]=t12[2];
-
-	dt0= (in_dwords[0]);
-	dt1= (in_dwords[1]);
-	dt2= (in_dwords[2]);
-	dt3= (in_dwords[3]);
-
-	//printf("Skein in hash=%lu,%lu,%lu,%lu\n",
-	//	dt0, dt1, dt2, dt3);
-
-	p0 = h[0] + dt0;
-	p1 = h[1] + dt1;
-	p2 = h[2] + dt2;
-	p3 = h[3] + dt3;
-	p4 = h[4];
-	p5 = h[5] + t[0];
-	p6 = h[6] + t[1];
-	p7 = h[7];
-
-	#pragma unroll 
-	for (int i = 1; i<19; i+=2) {Round_8_512(p0,p1,p2,p3,p4,p5,p6,p7,i);}
-	
-	p0 ^= dt0;
-	p1 ^= dt1;
-	p2 ^= dt2;
-	p3 ^= dt3;
-
-	h[0] = p0;
-	h[1] = p1;
-	h[2] = p2;
-	h[3] = p3;
-	h[4] = p4;
-	h[5] = p5;
-	h[6] = p6;
-	h[7] = p7;
-	h[8] = skein_ks_parity;
-
-	for (int i = 0; i<8; i++) { h[8] ^= h[i]; }
-		
-	t[0] = t12[3];
-	t[1] = t12[4];
-	t[2] = t12[5];
-	p5 += t[0];  //p5 already equal h[5] 
-	p6 += t[1];
-
-        #pragma unroll
-	for (int i = 1; i<19; i+=2) { Round_8_512(p0, p1, p2, p3, p4, p5, p6, p7, i); }
-
-
-	//printf("skein out regs =%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n", p0, p1, p2, p3, p4, p5, p6, p7);
-
-	out_dwords[0]      = (p0);
-	out_dwords[1]      = (p1);
-	out_dwords[2]      = (p2);
-	out_dwords[3]      = (p3);
-}
-
-
-// keccak32, in(32 bytes), out(32 bytes)
-inline void keccak32(const ulong* input_dwords, ulong* output_dwords)
-{
-	ulong keccak_gpu_state[25];
-
-	for (int i = 0; i<25; i++) {
-		if (i<4) { keccak_gpu_state[i] = (input_dwords[i]); }
-		else    { keccak_gpu_state[i] = 0; }
-	}
-	keccak_gpu_state[4] = 0x0000000000000001;
-	keccak_gpu_state[16] = 0x8000000000000000;
-
-	keccak_block((ulong*)&keccak_gpu_state[0]);
-
-	for (int i = 0; i<4; i++) { output_dwords[i] = keccak_gpu_state[i]; }
-}
-
-// bmw32, in(32 bytes), out(32 bytes)
-inline void bmw32(const uint* in_words, uint* out_words)
-{
-	//printf("bmw32 in bytes=%s\n", debug_print_hash(in_hash));
-
-	uint dh[16] = {
-		0x40414243, 0x44454647,
-		0x48494A4B, 0x4C4D4E4F,
-		0x50515253, 0x54555657,
-		0x58595A5B, 0x5C5D5E5F,
-		0x60616263, 0x64656667,
-		0x68696A6B, 0x6C6D6E6F,
-		0x70717273, 0x74757677,
-		0x78797A7B, 0x7C7D7E7F
-	};
-	uint final_s[16] = {
-		0xaaaaaaa0, 0xaaaaaaa1, 0xaaaaaaa2,
-		0xaaaaaaa3, 0xaaaaaaa4, 0xaaaaaaa5,
-		0xaaaaaaa6, 0xaaaaaaa7, 0xaaaaaaa8,
-		0xaaaaaaa9, 0xaaaaaaaa, 0xaaaaaaab,
-		0xaaaaaaac, 0xaaaaaaad, 0xaaaaaaae,
-		0xaaaaaaaf
-	};
-
-	uint message[16];
-	for (int i = 0; i<8; i++) message[i] = (in_words[i]);
-	for (int i = 9; i<14; i++) message[i] = 0;
-	message[8]= 0x80;
-	message[14]=0x100;
-	message[15]=0;
-
-	{
-		uint Q[32];
-		Compression256(message, dh, Q);
-		Compression256(dh, final_s, Q);
-	}
-
-	#pragma unroll
-	for (int i=8; i<16; i++) {
-		out_words[i-8] = (final_s[i]);
-	}
-}
-
-// bmw32, in(32 bytes), out(32 bytes)
-inline uint bmw32_to_target(const uint* in_words)
-{
-	//printf("bmw32 in bytes=%s\n", debug_print_hash(in_hash));
-
-	uint dh[16] = {
-		0x40414243, 0x44454647,
-		0x48494A4B, 0x4C4D4E4F,
-		0x50515253, 0x54555657,
-		0x58595A5B, 0x5C5D5E5F,
-		0x60616263, 0x64656667,
-		0x68696A6B, 0x6C6D6E6F,
-		0x70717273, 0x74757677,
-		0x78797A7B, 0x7C7D7E7F
-	};
-	uint final_s[16] = {
-		0xaaaaaaa0, 0xaaaaaaa1, 0xaaaaaaa2,
-		0xaaaaaaa3, 0xaaaaaaa4, 0xaaaaaaa5,
-		0xaaaaaaa6, 0xaaaaaaa7, 0xaaaaaaa8,
-		0xaaaaaaa9, 0xaaaaaaaa, 0xaaaaaaab,
-		0xaaaaaaac, 0xaaaaaaad, 0xaaaaaaae,
-		0xaaaaaaaf
-	};
-
-	uint message[16];
-	for (int i = 0; i<8; i++) message[i] = (in_words[i]);
-	for (int i = 9; i<14; i++) message[i] = 0;
-	message[8]= 0x80;
-	message[14]=0x100;
-	message[15]=0;
-
-	{
-		uint Q[32];
-		Compression256(message, dh, Q);
-		Compression256(dh, final_s, Q);
-	}
-
-	return final_s[15];
-}
-
-
-// bmw32, in(32 bytes), out(32 bytes)
-inline void bmw32_to_global(const uint* in_words, __global uint* out_words)
-{
-	//printf("bmw32 in bytes=%s\n", debug_print_hash(in_hash));
-
-	uint dh[16] = {
-		0x40414243, 0x44454647,
-		0x48494A4B, 0x4C4D4E4F,
-		0x50515253, 0x54555657,
-		0x58595A5B, 0x5C5D5E5F,
-		0x60616263, 0x64656667,
-		0x68696A6B, 0x6C6D6E6F,
-		0x70717273, 0x74757677,
-		0x78797A7B, 0x7C7D7E7F
-	};
-	uint final_s[16] = {
-		0xaaaaaaa0, 0xaaaaaaa1, 0xaaaaaaa2,
-		0xaaaaaaa3, 0xaaaaaaa4, 0xaaaaaaa5,
-		0xaaaaaaa6, 0xaaaaaaa7, 0xaaaaaaa8,
-		0xaaaaaaa9, 0xaaaaaaaa, 0xaaaaaaab,
-		0xaaaaaaac, 0xaaaaaaad, 0xaaaaaaae,
-		0xaaaaaaaf
-	};
-
-	uint message[16];
-	for (int i = 0; i<8; i++) message[i] = (in_words[i]);
-	for (int i = 9; i<14; i++) message[i] = 0;
-	message[8]= 0x80;
-	message[14]=0x100;
-	message[15]=0;
-
-	{
-		uint Q[32];
-		Compression256(message, dh, Q);
-		Compression256(dh, final_s, Q);
-	}
-	
-
-	#pragma unroll
-	for (int i=8; i<16; i++) {
-		out_words[i-8] = (final_s[i]);
-	}
-}
-
-// cubehash32, in(32 bytes), out(32 bytes)
-inline void cubehash32(const uint* in_words, uint* out_words)
-{
-	uint x0 = 0xEA2BD4B4; uint x1 = 0xCCD6F29F; uint x2 = 0x63117E71;
-	uint x3 = 0x35481EAE; uint x4 = 0x22512D5B; uint x5 = 0xE5D94E63;
-	uint x6 = 0x7E624131; uint x7 = 0xF4CC12BE; uint x8 = 0xC2D0B696;
-	uint x9 = 0x42AF2070; uint xa = 0xD0720C35; uint xb = 0x3361DA8C;
-	uint xc = 0x28CCECA4; uint xd = 0x8EF8AD83; uint xe = 0x4680AC00;
-	uint xf = 0x40E5FBAB;
-
-	uint xg = 0xD89041C3; uint xh = 0x6107FBD5;
-	uint xi = 0x6C859D41; uint xj = 0xF0B26679; uint xk = 0x09392549;
-	uint xl = 0x5FA25603; uint xm = 0x65C892FD; uint xn = 0x93CB6285;
-	uint xo = 0x2AF2B5AE; uint xp = 0x9E4B4E60; uint xq = 0x774ABFDD;
-	uint xr = 0x85254725; uint xs = 0x15815AEB; uint xt = 0x4AB6AAD6;
-	uint xu = 0x9CDAF8AF; uint xv = 0xD6032C0A;
-
-	x0 ^= (in_words[0]);
-	x1 ^= (in_words[1]);
-	x2 ^= (in_words[2]);
-	x3 ^= (in_words[3]);
-	x4 ^= (in_words[4]);
-	x5 ^= (in_words[5]);
-	x6 ^= (in_words[6]);
-	x7 ^= (in_words[7]);
-
-
-	SIXTEEN_ROUNDS;
-	x0 ^= 0x80;
-	SIXTEEN_ROUNDS;
-	xv ^= 0x01;
-	for (int i = 0; i < 10; ++i) SIXTEEN_ROUNDS;
-
-	out_words[0] = x0;
-	out_words[1] = x1;
-	out_words[2] = x2;
-	out_words[3] = x3;
-	out_words[4] = x4;
-	out_words[5] = x5;
-	out_words[6] = x6;
-	out_words[7] = x7;
-}
-
-// run-of-the-mill lyra2
-void lyra2(const ulong* in_dwords, ulong* out_dwords,__global ulong4* DMatrix)
-{
-	ulong4 state[4];
-
-	state[0].x = in_dwords[0]; //password
-	state[0].y = in_dwords[1]; //password
-	state[0].z = in_dwords[2]; //password
-	state[0].w = in_dwords[3]; //password
-	state[1] = state[0];
-	state[2] = SPH_ULONG4(0x6a09e667f3bcc908UL, 0xbb67ae8584caa73bUL, 0x3c6ef372fe94f82bUL, 0xa54ff53a5f1d36f1UL);
-	state[3] = SPH_ULONG4(0x510e527fade682d1UL, 0x9b05688c2b3e6c1fUL, 0x1f83d9abfb41bd6bUL, 0x5be0cd19137e2179UL);
-	for (int i = 0; i<12; i++) { round_lyra(state); } 
-
-	state[0] ^= SPH_ULONG4(0x20,0x20,0x20,0x01);
-	state[1] ^= SPH_ULONG4(0x04,0x04,0x80,0x0100000000000000);
-
-	for (int i = 0; i<12; i++) { round_lyra(state); } 
-
-
-	const uint ps1 = (memshift * 3);
-	//#pragma unroll 4
-	for (int i = 0; i < 4; i++)
-	{
-		uint s1 = ps1 - memshift * i;
-		for (int j = 0; j < 3; j++)
-			(DMatrix)[j+s1] = state[j];
-
-		round_lyra(state);
-	}
-
-	ulong4 state1[3];
-	reduceDuplexf(state1, state,DMatrix);
-
-	ulong4 state2[3];
-	reduceDuplexRowSetupf(state1, state2, 1, 0, 2, state,DMatrix);
-	reduceDuplexRowSetupf(state1, state2, 2, 1, 3, state,DMatrix);
-
-
-	uint rowa;
-	uint prev = 3;
-	for (uint i = 0; i<4; i++) {
-		rowa = state[0].x & 3;
-		reduceDuplexRowf(state1, state2,prev, rowa, i, state, DMatrix);
-		prev = i;
-	}
-
-	const uint shift = (memshift * 4 * rowa);
-
-	for (int j = 0; j < 3; j++)
-		state[j] ^= (DMatrix)[j+shift];
-
-	for (int i = 0; i < 12; i++)
-		round_lyra(state);
-	
-	//////////////////////////////////////
-
-	for (int i = 0; i<4; i++) {out_dwords[i] = ((ulong*)state)[i];} 
-}
-
-// lyra2re252, in(80 bytes), out(32 bytes)
-inline void lyra2re2_hash80_noswap(__constant const uint* blockToHash, uint gid, uint* hashedHeader, __global ulong4* nodes)
-{
-    blake80_noswap(blockToHash, gid, hashedHeader);
-    keccak32((ulong*)hashedHeader, (ulong*)hashedHeader);
-    cubehash32(hashedHeader, hashedHeader);
-    lyra2((ulong*)hashedHeader, (ulong*)hashedHeader, nodes);
-    skein32((ulong*)hashedHeader, (ulong*)hashedHeader);
-    cubehash32(hashedHeader, hashedHeader);
-    bmw32(hashedHeader, hashedHeader);
-}
-
-// lyra2re252, in(52 bytes), out(32 bytes)
-inline uint lyra2re2_hash52_to_target(const uint* blockToHash, __global ulong4* nodes)
-{
-	hash32_t tempHash;
-    blake52(blockToHash, tempHash.h4);
-    keccak32(tempHash.h8, tempHash.h8);
-    cubehash32(tempHash.h4, tempHash.h4);
-    lyra2(tempHash.h8, tempHash.h8, nodes);
-    skein32(tempHash.h8, tempHash.h8);
-    cubehash32(tempHash.h4, tempHash.h4);
-    return bmw32_to_target(tempHash.h4);
-}
-
-// lyra2re252, in(52 bytes), out(32 bytes)
-inline void lyra2re2_hash52_to_global(const uint* blockToHash, __global uint* hashedHeader, __global ulong4* nodes)
-{
-	hash32_t tempHash;
-    blake52(blockToHash, tempHash.h4);
-    keccak32(tempHash.h8, tempHash.h8);
-    cubehash32(tempHash.h4, tempHash.h4);
-    lyra2(tempHash.h8, tempHash.h8, nodes);
-    skein32(tempHash.h8, tempHash.h8);
-    cubehash32(tempHash.h4, tempHash.h4);
-    bmw32_to_global(tempHash.h4, hashedHeader);
-}
-
-// Perform header mix, outputting the mix hash
-inline uint4 hashimoto_mix(uint* headerHash, __global const uint16 *dag, const ulong n)
-{
-	const ulong mixhashes = MIX_BYTES / HASH_BYTES;    // 2
-	MixNodes mix;                  // 64 bytes
-	mix.nodes8[0] = mix.nodes8[1] = ((uint8*)headerHash)[0];
-	uint header_int = mix.values[0];
-	
-	for (uint i = 0; i < ACCESSES; i++) {
-		// Pick a dag index to mix with
-		const uint p = fnv(i ^ header_int, mix.values[i % 16]) % (n / mixhashes);
-
-		// Mix in mixer. Note dag access is at most aligned to 64 bytes
-		mix.nodes16 *= FNV_PRIME;
-		mix.nodes16 ^= dag[p];
-	}
-	
-	uint4 mixhash;
-	mixhash[0] = fnv(fnv(fnv(mix.values[0],  mix.values[0 + 1]),  mix.values[0 + 2]),  mix.values[0 + 3]);
-	mixhash[1] = fnv(fnv(fnv(mix.values[4],  mix.values[4 + 1]),  mix.values[4 + 2]),  mix.values[4 + 3]);
-	mixhash[2] = fnv(fnv(fnv(mix.values[8],  mix.values[8 + 1]),  mix.values[8 + 2]),  mix.values[8 + 3]);
-	mixhash[3] = fnv(fnv(fnv(mix.values[12], mix.values[12 + 1]), mix.values[12 + 2]), mix.values[12 + 3]);
-	return mixhash;
-}
-
-// Main hash function, in(80 bytes), out(32 bytes)
-// (version which makes use of vector units)
-inline void hashimoto_global(__constant const uint *headerToHash, const uint gid, __global const uint16 *dag, const ulong n, const uint height, __global ulong4* nodes, __global hash32_t* out_global)
-{
-	uint headerHash[13];
-	lyra2re2_hash80_noswap(headerToHash, gid, headerHash, nodes);
-	uint4 mixHash = hashimoto_mix(headerHash, dag, n);
-	{
-		headerHash[8] = height;
-		headerHash[9] = mixHash[0];
-		headerHash[10] = mixHash[1];
-		headerHash[11] = mixHash[2];
-		headerHash[12] = mixHash[3];
-
-	    // Final hash is first hash + mix + height
-	    lyra2re2_hash52_to_global(headerHash, out_global->h4, nodes);
-	}
-}
-
-inline uint hashimoto_target(__constant const uint *headerToHash, const uint gid, __global const uint16 *dag, const ulong n, const uint height, __global ulong4* nodes)
-{
-	uint headerHash[13];
-	lyra2re2_hash80_noswap(headerToHash, gid, headerHash, nodes);
-	uint4 mixHash = hashimoto_mix(headerHash, dag, n);
-	{
-		headerHash[8] = height;
-		headerHash[9] = mixHash[0];
-		headerHash[10] = mixHash[1];
-		headerHash[11] = mixHash[2];
-		headerHash[12] = mixHash[3];
-
-	    // Final hash is first hash + mix + height
-	    return lyra2re2_hash52_to_target(headerHash, nodes);
-	}
-}
-
-
-// Set to enable hash testing kernel variant
-//#define TEST_KERNEL_HASH
-
-#ifndef TEST_KERNEL_HASH
+#define SPH_ULONG4(a, b, c, d) (ulong4)(a, b, c, d)
+#define MIX_WORDS 16
 
 __attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
 __kernel void search(
@@ -1653,51 +868,683 @@ __kernel void search(
 	__global uchar* g_lyre_nodes,
 	const ulong DAG_ITEM_COUNT,
 	const uint height,
-	const uint target
+	const ulong target
 	)
 {
 	const uint gid = get_global_id(0); // i.e. nonce
 	const uint hash_output_idx = gid;// - get_global_offset(0);
-	__global ulong4 *DMatrix = (__global ulong4 *)(g_lyre_nodes + (LYRA_SCRATCHBUF_SIZE * (hash_output_idx % MAX_GLOBAL_THREADS)));
+	__global ulong4 *DMatrix = (__global ulong4 *)(g_lyre_nodes + (1536 * (hash_output_idx % MAX_GLOBAL_THREADS)));
 
-	// Run hashimoto (result hash output to block)
-	uint hash_target = hashimoto_target(g_header, gid, g_dag, DAG_ITEM_COUNT, height, DMatrix); 
+	uint saved_height = height;
+	ulong saved_target = target;
 
+	// set block
+	uint block[20];
+	block[0] = g_header[0];
+	block[1] = g_header[1];
+	block[2] = g_header[2];
+	block[3] = g_header[3];
+	block[4] = g_header[4];
+	block[5] = g_header[5];
+	block[6] = g_header[6];
+	block[7] = g_header[7];
+
+/////inlinefunc
+	//blake32
+
+	BLAKE256_COMPRESS32_STATE;
+
+#ifndef PRECALC_BLAKE
+	//T0 = SPH_T32(T0 + 512);
+	// Input == input words, already byteswapped
+	BLAKE256_COMPRESS_BEGIN_DIRECT(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
+		512, 0, (block[0]),(block[1]),(block[2]),(block[3]),(block[4]),(block[5]),(block[6]),(block[7]),(g_header[8]),(g_header[9]),(g_header[10]),(g_header[11]),(g_header[12]),(g_header[13]),(g_header[14]),(g_header[15]));
+#pragma unroll 
+	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
+		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
+		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
+		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
+		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
+		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
+		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
+		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
+		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
+	}
+	BLAKE256_COMPRESS_END_DIRECT_NOSWAP(SPH_C32(0x6a09e667), SPH_C32(0xbb67ae85), SPH_C32(0x3c6ef372), SPH_C32(0xa54ff53a),  SPH_C32(0x510e527f), SPH_C32(0x9b05688c), SPH_C32(0x1f83d9ab), SPH_C32(0x5be0cd19),
+		                                block[0], block[1], block[2], block[3], block[4], block[5], block[6], block[7]);
+#endif
+
+	// NOTE: At this stage, block[0...7] contains the previous state of the blake hash so we can continue on similarly to before
+
+	BLAKE256_COMPRESS_BEGIN_DIRECT(block[0], block[1], block[2], block[3], block[4], block[5], block[6], block[7], 640, 0, 
+		                          (g_header[16]),(g_header[17]),(g_header[18]),(gid),2147483648,0,0,0,0,0,0,0,0,1,0,640);
+#pragma unroll 
+	for (uint R = 0; R< BLAKE32_ROUNDS; R++) {
+		BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
+		BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
+		BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
+		BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
+		BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
+		BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
+		BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
+		BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
+	}
+
+	uint hashedHeader[50];
+
+	BLAKE256_COMPRESS_END_DIRECT_NOSWAP(block[0], block[1], block[2], block[3], block[4], block[5], block[6], block[7], 
+		                         hashedHeader[0], hashedHeader[1], hashedHeader[2], hashedHeader[3], hashedHeader[4], hashedHeader[5], hashedHeader[6], hashedHeader[7]);
+
+	hashedHeader[0] = sph_bswap32(hashedHeader[0]);
+	hashedHeader[1] = sph_bswap32(hashedHeader[1]);
+	hashedHeader[2] = sph_bswap32(hashedHeader[2]);
+	hashedHeader[3] = sph_bswap32(hashedHeader[3]);
+	hashedHeader[4] = sph_bswap32(hashedHeader[4]);
+	hashedHeader[5] = sph_bswap32(hashedHeader[5]);
+	hashedHeader[6] = sph_bswap32(hashedHeader[6]);
+	hashedHeader[7] = sph_bswap32(hashedHeader[7]);
+
+
+	//keccak32
+	ulong* keccak_gpu_state = (ulong*)hashedHeader;
+	keccak_gpu_state[5]=keccak_gpu_state[6]=keccak_gpu_state[7]=keccak_gpu_state[8]=keccak_gpu_state[9]=keccak_gpu_state[10]=keccak_gpu_state[11]=keccak_gpu_state[12]=keccak_gpu_state[13]=keccak_gpu_state[14]=keccak_gpu_state[15]=keccak_gpu_state[16]=keccak_gpu_state[17]=keccak_gpu_state[18]=keccak_gpu_state[19]=keccak_gpu_state[20]=keccak_gpu_state[21]=keccak_gpu_state[22]=keccak_gpu_state[23]=keccak_gpu_state[24]=0;
+	keccak_gpu_state[4] = 0x0000000000000001;
+	keccak_gpu_state[16] = 0x8000000000000000;
+	ulong t[5], u[5], v, w;
+	for (size_t i = 0; i < 24; i++) {
+			t[0] = keccak_gpu_state[0] ^ keccak_gpu_state[5] ^ keccak_gpu_state[10] ^ keccak_gpu_state[15] ^ keccak_gpu_state[20];
+			t[1] = keccak_gpu_state[1] ^ keccak_gpu_state[6] ^ keccak_gpu_state[11] ^ keccak_gpu_state[16] ^ keccak_gpu_state[21];
+			t[2] = keccak_gpu_state[2] ^ keccak_gpu_state[7] ^ keccak_gpu_state[12] ^ keccak_gpu_state[17] ^ keccak_gpu_state[22];
+			t[3] = keccak_gpu_state[3] ^ keccak_gpu_state[8] ^ keccak_gpu_state[13] ^ keccak_gpu_state[18] ^ keccak_gpu_state[23];
+			t[4] = keccak_gpu_state[4] ^ keccak_gpu_state[9] ^ keccak_gpu_state[14] ^ keccak_gpu_state[19] ^ keccak_gpu_state[24];
+			u[0] = t[4] ^ SPH_ROTL64(t[1], 1);
+			u[1] = t[0] ^ SPH_ROTL64(t[2], 1);
+			u[2] = t[1] ^ SPH_ROTL64(t[3], 1);
+			u[3] = t[2] ^ SPH_ROTL64(t[4], 1);
+			u[4] = t[3] ^ SPH_ROTL64(t[0], 1);
+			keccak_gpu_state[0] ^= u[0]; keccak_gpu_state[5] ^= u[0]; keccak_gpu_state[10] ^= u[0]; keccak_gpu_state[15] ^= u[0]; keccak_gpu_state[20] ^= u[0];
+			keccak_gpu_state[1] ^= u[1]; keccak_gpu_state[6] ^= u[1]; keccak_gpu_state[11] ^= u[1]; keccak_gpu_state[16] ^= u[1]; keccak_gpu_state[21] ^= u[1];
+			keccak_gpu_state[2] ^= u[2]; keccak_gpu_state[7] ^= u[2]; keccak_gpu_state[12] ^= u[2]; keccak_gpu_state[17] ^= u[2]; keccak_gpu_state[22] ^= u[2];
+			keccak_gpu_state[3] ^= u[3]; keccak_gpu_state[8] ^= u[3]; keccak_gpu_state[13] ^= u[3]; keccak_gpu_state[18] ^= u[3]; keccak_gpu_state[23] ^= u[3];
+			keccak_gpu_state[4] ^= u[4]; keccak_gpu_state[9] ^= u[4]; keccak_gpu_state[14] ^= u[4]; keccak_gpu_state[19] ^= u[4]; keccak_gpu_state[24] ^= u[4];
+			v = keccak_gpu_state[1];
+			keccak_gpu_state[1] = SPH_ROTL64(keccak_gpu_state[6], 44);
+			keccak_gpu_state[6] = SPH_ROTL64(keccak_gpu_state[9], 20);
+			keccak_gpu_state[9] = SPH_ROTL64(keccak_gpu_state[22], 61);
+			keccak_gpu_state[22] = SPH_ROTL64(keccak_gpu_state[14], 39);
+			keccak_gpu_state[14] = SPH_ROTL64(keccak_gpu_state[20], 18);
+			keccak_gpu_state[20] = SPH_ROTL64(keccak_gpu_state[2], 62);
+			keccak_gpu_state[2] = SPH_ROTL64(keccak_gpu_state[12], 43);
+			keccak_gpu_state[12] = SPH_ROTL64(keccak_gpu_state[13], 25);
+			keccak_gpu_state[13] = SPH_ROTL64(keccak_gpu_state[19], 8);
+			keccak_gpu_state[19] = SPH_ROTL64(keccak_gpu_state[23], 56);
+			keccak_gpu_state[23] = SPH_ROTL64(keccak_gpu_state[15], 41);
+			keccak_gpu_state[15] = SPH_ROTL64(keccak_gpu_state[4], 27);
+			keccak_gpu_state[4] = SPH_ROTL64(keccak_gpu_state[24], 14);
+			keccak_gpu_state[24] = SPH_ROTL64(keccak_gpu_state[21], 2);
+			keccak_gpu_state[21] = SPH_ROTL64(keccak_gpu_state[8], 55);
+			keccak_gpu_state[8] = SPH_ROTL64(keccak_gpu_state[16], 45);
+			keccak_gpu_state[16] = SPH_ROTL64(keccak_gpu_state[5], 36);
+			keccak_gpu_state[5] = SPH_ROTL64(keccak_gpu_state[3], 28);
+			keccak_gpu_state[3] = SPH_ROTL64(keccak_gpu_state[18], 21);
+			keccak_gpu_state[18] = SPH_ROTL64(keccak_gpu_state[17], 15);
+			keccak_gpu_state[17] = SPH_ROTL64(keccak_gpu_state[11], 10);
+			keccak_gpu_state[11] = SPH_ROTL64(keccak_gpu_state[7], 6);
+			keccak_gpu_state[7] = SPH_ROTL64(keccak_gpu_state[10], 3);
+			keccak_gpu_state[10] = SPH_ROTL64(v, 1);
+			v = keccak_gpu_state[0]; w = keccak_gpu_state[1]; keccak_gpu_state[0] ^= (~w) & keccak_gpu_state[2]; keccak_gpu_state[1] ^= (~keccak_gpu_state[2]) & keccak_gpu_state[3]; keccak_gpu_state[2] ^= (~keccak_gpu_state[3]) & keccak_gpu_state[4]; keccak_gpu_state[3] ^= (~keccak_gpu_state[4]) & v; keccak_gpu_state[4] ^= (~v) & w;
+			v = keccak_gpu_state[5]; w = keccak_gpu_state[6]; keccak_gpu_state[5] ^= (~w) & keccak_gpu_state[7]; keccak_gpu_state[6] ^= (~keccak_gpu_state[7]) & keccak_gpu_state[8]; keccak_gpu_state[7] ^= (~keccak_gpu_state[8]) & keccak_gpu_state[9]; keccak_gpu_state[8] ^= (~keccak_gpu_state[9]) & v; keccak_gpu_state[9] ^= (~v) & w;
+			v = keccak_gpu_state[10]; w = keccak_gpu_state[11]; keccak_gpu_state[10] ^= (~w) & keccak_gpu_state[12]; keccak_gpu_state[11] ^= (~keccak_gpu_state[12]) & keccak_gpu_state[13]; keccak_gpu_state[12] ^= (~keccak_gpu_state[13]) & keccak_gpu_state[14]; keccak_gpu_state[13] ^= (~keccak_gpu_state[14]) & v; keccak_gpu_state[14] ^= (~v) & w;
+			v = keccak_gpu_state[15]; w = keccak_gpu_state[16]; keccak_gpu_state[15] ^= (~w) & keccak_gpu_state[17]; keccak_gpu_state[16] ^= (~keccak_gpu_state[17]) & keccak_gpu_state[18]; keccak_gpu_state[17] ^= (~keccak_gpu_state[18]) & keccak_gpu_state[19]; keccak_gpu_state[18] ^= (~keccak_gpu_state[19]) & v; keccak_gpu_state[19] ^= (~v) & w;
+			v = keccak_gpu_state[20]; w = keccak_gpu_state[21]; keccak_gpu_state[20] ^= (~w) & keccak_gpu_state[22]; keccak_gpu_state[21] ^= (~keccak_gpu_state[22]) & keccak_gpu_state[23]; keccak_gpu_state[22] ^= (~keccak_gpu_state[23]) & keccak_gpu_state[24]; keccak_gpu_state[23] ^= (~keccak_gpu_state[24]) & v; keccak_gpu_state[24] ^= (~v) & w;
+			keccak_gpu_state[0] ^= RC[i];
+	}
+	uint* hashB = (uint*)keccak_gpu_state;
+        //cubehash32
+	uint x0 = 0xEA2BD4B4; uint x1 = 0xCCD6F29F; uint x2 = 0x63117E71;
+	uint x3 = 0x35481EAE; uint x4 = 0x22512D5B; uint x5 = 0xE5D94E63;
+	uint x6 = 0x7E624131; uint x7 = 0xF4CC12BE; uint x8 = 0xC2D0B696;
+	uint x9 = 0x42AF2070; uint xa = 0xD0720C35; uint xb = 0x3361DA8C;
+	uint xc = 0x28CCECA4; uint xd = 0x8EF8AD83; uint xe = 0x4680AC00;
+	uint xf = 0x40E5FBAB;
+	uint xg = 0xD89041C3; uint xh = 0x6107FBD5;
+	uint xi = 0x6C859D41; uint xj = 0xF0B26679; uint xk = 0x09392549;
+	uint xl = 0x5FA25603; uint xm = 0x65C892FD; uint xn = 0x93CB6285;
+	uint xo = 0x2AF2B5AE; uint xp = 0x9E4B4E60; uint xq = 0x774ABFDD;
+	uint xr = 0x85254725; uint xs = 0x15815AEB; uint xt = 0x4AB6AAD6;
+	uint xu = 0x9CDAF8AF; uint xv = 0xD6032C0A;
+	x0 ^= (hashB[0]);
+	x1 ^= (hashB[1]);
+	x2 ^= (hashB[2]);
+	x3 ^= (hashB[3]);
+	x4 ^= (hashB[4]);
+	x5 ^= (hashB[5]);
+	x6 ^= (hashB[6]);
+	x7 ^= (hashB[7]);
+	SIXTEEN_ROUNDS;
+	x0 ^= 0x80;
+	SIXTEEN_ROUNDS;
+	xv ^= 0x01;
+	for (int i = 0; i < 10; ++i) SIXTEEN_ROUNDS;
+	hashedHeader[0] = x0;
+	hashedHeader[1] = x1;
+	hashedHeader[2] = x2;
+	hashedHeader[3] = x3;
+	hashedHeader[4] = x4;
+	hashedHeader[5] = x5;
+	hashedHeader[6] = x6;
+	hashedHeader[7] = x7;
+    //lyra2 start
+	ulong4* state = (ulong4*)hashedHeader;
+	state[1] = state[0]; state[2] = SPH_ULONG4(0x6a09e667f3bcc908UL, 0xbb67ae8584caa73bUL, 0x3c6ef372fe94f82bUL, 0xa54ff53a5f1d36f1UL); state[3] = SPH_ULONG4(0x510e527fade682d1UL, 0x9b05688c2b3e6c1fUL, 0x1f83d9abfb41bd6bUL, 0x5be0cd19137e2179UL);	for (int i = 0; i<12; i++) round_lyra(state); state[0] ^= SPH_ULONG4(0x20,0x20,0x20,0x01); state[1] ^= SPH_ULONG4(0x04,0x04,0x80,0x0100000000000000); for (int i = 0; i<12; i++) round_lyra(state); uint ps1 = (3 * 3); for (int i = 0; i < 4; i++) { uint s1 = ps1 - 3 * i; for (int j = 0; j < 3; j++) (DMatrix)[j+s1] = state[j]; round_lyra(state); }	
+    // squashed reduceduplexf - reduceDuplexf(state,DMatrix)
+	ulong4 state1[3]; ps1 = 0; uint ps2 = (3 * 3 + 3 * 4); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 - i*3; for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state[j] ^= state1[j]; round_lyra(state); for (int j = 0; j < 3; j++) state1[j] ^= state[j]; for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state1[j]; }	
+	// squashed reduceduplexrowsetupf (1,0,2..) - reduceDuplexRowSetupf(uint rowIn, uint rowInOut, uint rowOut, ulong4 *state,  __global ulong4* DMatrix)
+	ulong4 state2[3]; ps1 = (3 * 4 * 1); ps2 = (3 * 4 * 0); uint ps3 = (3 * 3 + 3 * 4 * 2); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 + i*3; uint s3 = ps3 - i*3;	for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state2[j] = (DMatrix)[j + s2]; for (int j = 0; j < 3; j++) { ulong4 tmp = state1[j] + state2[j]; state[j] ^= tmp; } round_lyra(state); for (int j = 0; j < 3; j++) { state1[j] ^= state[j]; (DMatrix)[j + s3] = state1[j]; } ((ulong*)state2)[0] ^= ((ulong*)state)[11];	for (int j = 0; j < 11; j++) ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];	for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; }
+	// squashed reduceduplexrowsetupf (2,1,3..) - reduceDuplexRowSetupf(uint rowIn, uint rowInOut, uint rowOut, ulong4 *state,  __global ulong4* DMatrix)
+	ps1 = (3 * 4 * 2); ps2 = (3 * 4 * 1); ps3 = (3 * 3 + 3 * 4 * 3); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 + i*3; uint s3 = ps3 - i*3;	for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state2[j] = (DMatrix)[j + s2]; for (int j = 0; j < 3; j++) { ulong4 tmp = state1[j] + state2[j]; state[j] ^= tmp; } round_lyra(state); for (int j = 0; j < 3; j++) { state1[j] ^= state[j]; (DMatrix)[j + s3] = state1[j]; } ((ulong*)state2)[0] ^= ((ulong*)state)[11];	for (int j = 0; j < 11; j++) ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];	for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; }
+    // last loops of lyra2
+	uint rowa; uint prev = 3; for (uint h = 0; h<4; h++) { rowa = state[0].x & 3; ulong4 state1[3], state2[3]; uint ps1 = (3 * 4 * prev);   uint ps2 = (3 * 4 * rowa); uint ps3 = (3 * 4 * h); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 + i*3; uint s3 = ps3 + i*3; for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state2[j] = (DMatrix)[j + s2]; for (int j = 0; j < 3; j++) state1[j] += state2[j]; for (int j = 0; j < 3; j++) state[j] ^= state1[j]; round_lyra(state); ((ulong*)state2)[0] ^= ((ulong*)state)[11]; for (int j = 0; j < 11; j++) ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];   if (rowa != h) { for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; for (int j = 0; j < 3; j++) (DMatrix)[j + s3] ^= state[j];  } else { for (int j = 0; j < 3; j++) state2[j] ^= state[j]; for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; }} prev = h; } uint shift = (3 * 4 * rowa);	for (int j = 0; j < 3; j++) state[j] ^= (DMatrix)[j+shift]; for (int i = 0; i < 12; i++) round_lyra(state);	
+	hashB = (uint*)state;
+        //keccak32
+        ulong* in_dwords = (ulong*)hashB;
+        ulong h[9]; ulong dt0,dt1,dt2,dt3;ulong p0,p1,p2,p3,p4,p5,p6,p7;h[8] = skein_ks_parity;
+        for (int i = 0; i<8; i++) { h[i] = SKEIN_IV512_256[i]; h[8] ^= h[i]; }  t[0]=t12[0]; t[1]=t12[1]; t[2]=t12[2];
+        dt0= (in_dwords[0]); dt1= (in_dwords[1]); dt2= (in_dwords[2]); dt3= (in_dwords[3]);
+        p0 = h[0] + dt0;p1 = h[1] + dt1;p2 = h[2] + dt2;p3 = h[3] + dt3;p4 = h[4];p5 = h[5] + t[0];p6 = h[6] + t[1];p7 = h[7];
+        for (int i = 1; i<19; i+=2) {Round_8_512(p0,p1,p2,p3,p4,p5,p6,p7,i);}
+        p0 ^= dt0; p1 ^= dt1; p2 ^= dt2; p3 ^= dt3;
+        h[0] = p0;h[1] = p1;h[2] = p2;h[3] = p3;h[4] = p4;h[5] = p5;h[6] = p6;h[7] = p7;h[8] = skein_ks_parity;
+        for (int i = 0; i<8; i++) { h[8] ^= h[i]; } t[0] = t12[3];t[1] = t12[4];t[2] = t12[5];p5 += t[0];p6 += t[1];
+        for (int i = 1; i<19; i+=2) { Round_8_512(p0, p1, p2, p3, p4, p5, p6, p7, i); }
+        ulong out_dwords[50]; 
+        out_dwords[0] = (p0);out_dwords[1] = (p1);out_dwords[2] = (p2); out_dwords[3] = (p3);
+        hashB = (uint*)out_dwords;
+    //cubehash32
+	x0 = 0xEA2BD4B4; x1 = 0xCCD6F29F; x2 = 0x63117E71;
+	x3 = 0x35481EAE; x4 = 0x22512D5B; x5 = 0xE5D94E63;
+	x6 = 0x7E624131; x7 = 0xF4CC12BE; x8 = 0xC2D0B696;
+	x9 = 0x42AF2070; xa = 0xD0720C35; xb = 0x3361DA8C;
+	xc = 0x28CCECA4; xd = 0x8EF8AD83; xe = 0x4680AC00;
+	xf = 0x40E5FBAB;
+	xg = 0xD89041C3; xh = 0x6107FBD5;
+	xi = 0x6C859D41; xj = 0xF0B26679; xk = 0x09392549;
+	xl = 0x5FA25603; xm = 0x65C892FD; xn = 0x93CB6285;
+	xo = 0x2AF2B5AE; xp = 0x9E4B4E60; xq = 0x774ABFDD;
+	xr = 0x85254725; xs = 0x15815AEB; xt = 0x4AB6AAD6;
+	xu = 0x9CDAF8AF; xv = 0xD6032C0A;
+	x0 ^= (hashB[0]);
+	x1 ^= (hashB[1]);
+	x2 ^= (hashB[2]);
+	x3 ^= (hashB[3]);
+	x4 ^= (hashB[4]);
+	x5 ^= (hashB[5]);
+	x6 ^= (hashB[6]);
+	x7 ^= (hashB[7]);
+	SIXTEEN_ROUNDS;
+	x0 ^= 0x80;
+	SIXTEEN_ROUNDS;
+	xv ^= 0x01;
+	for (int i = 0; i < 10; ++i) SIXTEEN_ROUNDS;
+    //bmw32
+	uint dh[16] = {
+			0x40414243, 0x44454647,
+			0x48494A4B, 0x4C4D4E4F,
+			0x50515253, 0x54555657,
+			0x58595A5B, 0x5C5D5E5F,
+			0x60616263, 0x64656667,
+			0x68696A6B, 0x6C6D6E6F,
+			0x70717273, 0x74757677,
+			0x78797A7B, 0x7C7D7E7F
+	};
+	uint final_s[16] = {
+			0xaaaaaaa0, 0xaaaaaaa1, 0xaaaaaaa2,
+			0xaaaaaaa3, 0xaaaaaaa4, 0xaaaaaaa5,
+			0xaaaaaaa6, 0xaaaaaaa7, 0xaaaaaaa8,
+			0xaaaaaaa9, 0xaaaaaaaa, 0xaaaaaaab,
+			0xaaaaaaac, 0xaaaaaaad, 0xaaaaaaae,
+			0xaaaaaaaf
+	};
+	uint message[16]; 
+        message[0] = x0; message[1] = x1; message[2] = x2; message[3] = x3; message[4] = x4; 
+        message[5] = x5; message[6] = x6; message[7] = x7; message[9] = 0; message[10] = 0;
+        message[11] = 0; message[12] = 0; message[13] = 0; message[8]= 0x80; message[14]=0x100; message[15]=0;
+        //compression256 message_dh_start
+	uint XL32,XH32,Q[32];
+	Q[0]=ss0((message[5]^dh[5])-(message[7]^dh[7])+(message[10]^dh[10])+(message[13]^dh[13])+(message[14]^dh[14]))+dh[1];
+	Q[1]=ss1((message[6]^dh[6])-(message[8]^dh[8])+(message[11]^dh[11])+(message[14]^dh[14])-(message[15]^dh[15]))+dh[2];
+	Q[2]=ss2((message[0]^dh[0])+(message[7]^dh[7])+(message[9]^dh[9])-(message[12]^dh[12])+(message[15]^dh[15]))+dh[3];
+	Q[3]=ss3((message[0]^dh[0])-(message[1]^dh[1])+(message[8]^dh[8])-(message[10]^dh[10])+(message[13]^dh[13]))+dh[4];
+	Q[4]=ss4((message[1]^dh[1])+(message[2]^dh[2])+(message[9]^dh[9])-(message[11]^dh[11])-(message[14]^dh[14]))+dh[5];
+	Q[5]=ss0((message[3]^dh[3])-(message[2]^dh[2])+(message[10]^dh[10])-(message[12]^dh[12])+(message[15]^dh[15]))+dh[6];
+	Q[6]=ss1((message[4]^dh[4])-(message[0]^dh[0])-(message[3]^dh[3])-(message[11]^dh[11])+(message[13]^dh[13]))+dh[7];
+	Q[7]=ss2((message[1]^dh[1])-(message[4]^dh[4])-(message[5]^dh[5])-(message[12]^dh[12])-(message[14]^dh[14]))+dh[8];
+	Q[8]=ss3((message[2]^dh[2])-(message[5]^dh[5])-(message[6]^dh[6])+(message[13]^dh[13])-(message[15]^dh[15]))+dh[9];
+	Q[9]=ss4((message[0]^dh[0])-(message[3]^dh[3])+(message[6]^dh[6])-(message[7]^dh[7])+(message[14]^dh[14]))+dh[10];
+	Q[10]=ss0((message[8]^dh[8])-(message[1]^dh[1])-(message[4]^dh[4])-(message[7]^dh[7])+(message[15]^dh[15]))+dh[11];
+	Q[11]=ss1((message[8]^dh[8])-(message[0]^dh[0])-(message[2]^dh[2])-(message[5]^dh[5])+(message[9]^dh[9]))+dh[12];
+	Q[12]=ss2((message[1]^dh[1])+(message[3]^dh[3])-(message[6]^dh[6])-(message[9]^dh[9])+(message[10]^dh[10]))+dh[13];
+	Q[13]=ss3((message[2]^dh[2])+(message[4]^dh[4])+(message[7]^dh[7])+(message[10]^dh[10])+(message[11]^dh[11]))+dh[14];
+	Q[14]=ss4((message[3]^dh[3])-(message[5]^dh[5])+(message[8]^dh[8])-(message[11]^dh[11])-(message[12]^dh[12]))+dh[15];
+	Q[15]=ss0((message[12]^dh[12])-(message[4]^dh[4])-(message[6]^dh[6])-(message[9]^dh[9])+(message[13]^dh[13]))+dh[0];
+	Q[16]=expand32_1(16,message,dh,Q);
+	Q[17]=expand32_1(17,message,dh,Q);
+	Q[18]=expand32_2(18,message,dh,Q);
+	Q[19]=expand32_2(19,message,dh,Q);
+	Q[20]=expand32_2(20,message,dh,Q);
+	Q[21]=expand32_2(21,message,dh,Q);
+	Q[22]=expand32_2(22,message,dh,Q);
+	Q[23]=expand32_2(23,message,dh,Q);
+	Q[24]=expand32_2(24,message,dh,Q);
+	Q[25]=expand32_2(25,message,dh,Q);
+	Q[26]=expand32_2(26,message,dh,Q);
+	Q[27]=expand32_2(27,message,dh,Q);
+	Q[28]=expand32_2(28,message,dh,Q);
+	Q[29]=expand32_2(29,message,dh,Q);
+	Q[30]=expand32_2(30,message,dh,Q);
+	Q[31]=expand32_2(31,message,dh,Q);
+	XL32=Q[16]^Q[17]^Q[18]^Q[19]^Q[20]^Q[21]^Q[22]^Q[23];
+	XH32=XL32^Q[24]^Q[25]^Q[26]^Q[27]^Q[28]^Q[29]^Q[30]^Q[31];
+	dh[0]=(shl(XH32,5)^shr(Q[16],5)^message[0])+(XL32^Q[24]^Q[0]);
+	dh[1]=(shr(XH32,7)^shl(Q[17],8)^message[1])+(XL32^Q[25]^Q[1]);
+	dh[2]=(shr(XH32,5)^shl(Q[18],5)^message[2])+(XL32^Q[26]^Q[2]);
+	dh[3]=(shr(XH32,1)^shl(Q[19],5)^message[3])+(XL32^Q[27]^Q[3]);
+	dh[4]=(shr(XH32,3)^Q[20]^message[4])+(XL32^Q[28]^Q[4]);
+	dh[5]=(shl(XH32,6)^shr(Q[21],6)^message[5])+(XL32^Q[29]^Q[5]);
+	dh[6]=(shr(XH32,4)^shl(Q[22],6)^message[6])+(XL32^Q[30]^Q[6]);
+	dh[7]=(shr(XH32,11)^shl(Q[23],2)^message[7])+(XL32^Q[31]^Q[7]);
+	dh[8]=SPH_ROTL32(dh[4],9)+(XH32^Q[24]^message[8])+(shl(XL32,8)^Q[23]^Q[8]);
+	dh[9]=SPH_ROTL32(dh[5],10)+(XH32^Q[25]^message[9])+(shr(XL32,6)^Q[16]^Q[9]);
+	dh[10]=SPH_ROTL32(dh[6],11)+(XH32^Q[26]^message[10])+(shl(XL32,6)^Q[17]^Q[10]);
+	dh[11]=SPH_ROTL32(dh[7],12)+(XH32^Q[27]^message[11])+(shl(XL32,4)^Q[18]^Q[11]);
+	dh[12]=SPH_ROTL32(dh[0],13)+(XH32^Q[28]^message[12])+(shr(XL32,3)^Q[19]^Q[12]);
+	dh[13]=SPH_ROTL32(dh[1],14)+(XH32^Q[29]^message[13])+(shr(XL32,4)^Q[20]^Q[13]);
+	dh[14]=SPH_ROTL32(dh[2],15)+(XH32^Q[30]^message[14])+(shr(XL32,7)^Q[21]^Q[14]);
+	dh[15]=SPH_ROTL32(dh[3],16)+(XH32^Q[31]^message[15])+(shr(XL32,2)^Q[22]^Q[15]);
+        //compression256 message_dh_end
+	//compression256 dh_finals_start
+	Q[0]=ss0((dh[5]^final_s[5])-(dh[7]^final_s[7])+(dh[10]^final_s[10])+(dh[13]^final_s[13])+(dh[14]^final_s[14]))+final_s[1];
+	Q[1]=ss1((dh[6]^final_s[6])-(dh[8]^final_s[8])+(dh[11]^final_s[11])+(dh[14]^final_s[14])-(dh[15]^final_s[15]))+final_s[2];
+	Q[2]=ss2((dh[0]^final_s[0])+(dh[7]^final_s[7])+(dh[9]^final_s[9])-(dh[12]^final_s[12])+(dh[15]^final_s[15]))+final_s[3];
+	Q[3]=ss3((dh[0]^final_s[0])-(dh[1]^final_s[1])+(dh[8]^final_s[8])-(dh[10]^final_s[10])+(dh[13]^final_s[13]))+final_s[4];
+	Q[4]=ss4((dh[1]^final_s[1])+(dh[2]^final_s[2])+(dh[9]^final_s[9])-(dh[11]^final_s[11])-(dh[14]^final_s[14]))+final_s[5];
+	Q[5]=ss0((dh[3]^final_s[3])-(dh[2]^final_s[2])+(dh[10]^final_s[10])-(dh[12]^final_s[12])+(dh[15]^final_s[15]))+final_s[6];
+	Q[6]=ss1((dh[4]^final_s[4])-(dh[0]^final_s[0])-(dh[3]^final_s[3])-(dh[11]^final_s[11])+(dh[13]^final_s[13]))+final_s[7];
+	Q[7]=ss2((dh[1]^final_s[1])-(dh[4]^final_s[4])-(dh[5]^final_s[5])-(dh[12]^final_s[12])-(dh[14]^final_s[14]))+final_s[8];
+	Q[8]=ss3((dh[2]^final_s[2])-(dh[5]^final_s[5])-(dh[6]^final_s[6])+(dh[13]^final_s[13])-(dh[15]^final_s[15]))+final_s[9];
+	Q[9]=ss4((dh[0]^final_s[0])-(dh[3]^final_s[3])+(dh[6]^final_s[6])-(dh[7]^final_s[7])+(dh[14]^final_s[14]))+final_s[10];
+	Q[10]=ss0((dh[8]^final_s[8])-(dh[1]^final_s[1])-(dh[4]^final_s[4])-(dh[7]^final_s[7])+(dh[15]^final_s[15]))+final_s[11];
+	Q[11]=ss1((dh[8]^final_s[8])-(dh[0]^final_s[0])-(dh[2]^final_s[2])-(dh[5]^final_s[5])+(dh[9]^final_s[9]))+final_s[12];
+	Q[12]=ss2((dh[1]^final_s[1])+(dh[3]^final_s[3])-(dh[6]^final_s[6])-(dh[9]^final_s[9])+(dh[10]^final_s[10]))+final_s[13];
+	Q[13]=ss3((dh[2]^final_s[2])+(dh[4]^final_s[4])+(dh[7]^final_s[7])+(dh[10]^final_s[10])+(dh[11]^final_s[11]))+final_s[14];
+	Q[14]=ss4((dh[3]^final_s[3])-(dh[5]^final_s[5])+(dh[8]^final_s[8])-(dh[11]^final_s[11])-(dh[12]^final_s[12]))+final_s[15];
+	Q[15]=ss0((dh[12]^final_s[12])-(dh[4]^final_s[4])-(dh[6]^final_s[6])-(dh[9]^final_s[9])+(dh[13]^final_s[13]))+final_s[0];
+	Q[16]=expand32_1(16,dh,final_s,Q);
+	Q[17]=expand32_1(17,dh,final_s,Q);
+	Q[18]=expand32_2(18,dh,final_s,Q);
+	Q[19]=expand32_2(19,dh,final_s,Q);
+	Q[20]=expand32_2(20,dh,final_s,Q);
+	Q[21]=expand32_2(21,dh,final_s,Q);
+	Q[22]=expand32_2(22,dh,final_s,Q);
+	Q[23]=expand32_2(23,dh,final_s,Q);
+	Q[24]=expand32_2(24,dh,final_s,Q);
+	Q[25]=expand32_2(25,dh,final_s,Q);
+	Q[26]=expand32_2(26,dh,final_s,Q);
+	Q[27]=expand32_2(27,dh,final_s,Q);
+	Q[28]=expand32_2(28,dh,final_s,Q);
+	Q[29]=expand32_2(29,dh,final_s,Q);
+	Q[30]=expand32_2(30,dh,final_s,Q);
+	Q[31]=expand32_2(31,dh,final_s,Q);
+	XL32=Q[16]^Q[17]^Q[18]^Q[19]^Q[20]^Q[21]^Q[22]^Q[23];
+	XH32=XL32^Q[24]^Q[25]^Q[26]^Q[27]^Q[28]^Q[29]^Q[30]^Q[31];
+	final_s[0]=(shl(XH32,5)^shr(Q[16],5)^dh[0])+(XL32^Q[24]^Q[0]);
+	final_s[1]=(shr(XH32,7)^shl(Q[17],8)^dh[1])+(XL32^Q[25]^Q[1]);
+	final_s[2]=(shr(XH32,5)^shl(Q[18],5)^dh[2])+(XL32^Q[26]^Q[2]);
+	final_s[3]=(shr(XH32,1)^shl(Q[19],5)^dh[3])+(XL32^Q[27]^Q[3]);
+	final_s[4]=(shr(XH32,3)^Q[20]^dh[4])+(XL32^Q[28]^Q[4]);
+	final_s[5]=(shl(XH32,6)^shr(Q[21],6)^dh[5])+(XL32^Q[29]^Q[5]);
+	final_s[6]=(shr(XH32,4)^shl(Q[22],6)^dh[6])+(XL32^Q[30]^Q[6]);
+	final_s[7]=(shr(XH32,11)^shl(Q[23],2)^dh[7])+(XL32^Q[31]^Q[7]);
+	final_s[8]=SPH_ROTL32(final_s[4],9)+(XH32^Q[24]^dh[8])+(shl(XL32,8)^Q[23]^Q[8]);
+	final_s[9]=SPH_ROTL32(final_s[5],10)+(XH32^Q[25]^dh[9])+(shr(XL32,6)^Q[16]^Q[9]);
+	final_s[10]=SPH_ROTL32(final_s[6],11)+(XH32^Q[26]^dh[10])+(shl(XL32,6)^Q[17]^Q[10]);
+	final_s[11]=SPH_ROTL32(final_s[7],12)+(XH32^Q[27]^dh[11])+(shl(XL32,4)^Q[18]^Q[11]);
+	final_s[12]=SPH_ROTL32(final_s[0],13)+(XH32^Q[28]^dh[12])+(shr(XL32,3)^Q[19]^Q[12]);
+	final_s[13]=SPH_ROTL32(final_s[1],14)+(XH32^Q[29]^dh[13])+(shr(XL32,4)^Q[20]^Q[13]);
+	final_s[14]=SPH_ROTL32(final_s[2],15)+(XH32^Q[30]^dh[14])+(shr(XL32,7)^Q[21]^Q[14]);
+	final_s[15]=SPH_ROTL32(final_s[3],16)+(XH32^Q[31]^dh[15])+(shr(XL32,2)^Q[22]^Q[15]);
+	//compression256 dh_finals_end
+	
+////inlinefunc
+	const ulong mixhashes = MIX_BYTES / HASH_BYTES;    // 2
+	const ulong wordhashes = MIX_BYTES / WORD_BYTES;   // 16
+	MixNodes mix;                  // 64 bytes
+
+	mix.nodes16 = (uint16)(final_s[8], final_s[9], final_s[10], final_s[11], final_s[12], final_s[13], final_s[14], final_s[15],
+						   final_s[8], final_s[9], final_s[10], final_s[11], final_s[12], final_s[13], final_s[14], final_s[15]);
+	for (uint i = 0; i < ACCESSES; i++) {
+			uint p = fnv(i ^ final_s[8], mix.values[i % 16]) % (DAG_ITEM_COUNT / mixhashes);
+			mix.nodes16 *= FNV_PRIME;
+			mix.nodes16 ^= g_dag[p];
+	}
+	
+	// cmix -> result.cmix. Also goes at end of header.
+	final_s[0] = height;
+	final_s[1] = fnv(fnv(fnv(mix.values[0], mix.values[0 + 1]), mix.values[0 + 2]), mix.values[0 + 3]);
+	final_s[2] = fnv(fnv(fnv(mix.values[4], mix.values[4 + 1]), mix.values[4 + 2]), mix.values[4 + 3]);
+	final_s[3] = fnv(fnv(fnv(mix.values[8], mix.values[8 + 1]), mix.values[8 + 2]), mix.values[8 + 3]);
+	final_s[4] = fnv(fnv(fnv(mix.values[12], mix.values[12 + 1]), mix.values[12 + 2]), mix.values[12 + 3]);
+
+/////inlinefunc
+
+    //blake52
+    BLAKE256_STATE;
+	INIT_BLAKE256_STATE;
+	T0 = SPH_C32(0xFFFFFE00) + 416;
+	T1 = SPH_C32(0xFFFFFFFF);
+	T0 = SPH_T32(T0 + 512);
+	T1 = SPH_T32(T1 + 1);        
+	BLAKE256_COMPRESS_BEGIN(sph_bswap32(final_s[8]),sph_bswap32(final_s[9]),sph_bswap32(final_s[10]),sph_bswap32(final_s[11]),sph_bswap32(final_s[12]),sph_bswap32(final_s[13]),sph_bswap32(final_s[14]),sph_bswap32(final_s[15]),sph_bswap32(final_s[0]),sph_bswap32(final_s[1]),sph_bswap32(final_s[2]),sph_bswap32(final_s[3]),sph_bswap32(final_s[4]),2147483649,0,416);
+        #pragma unroll 14
+	for (uint R = 0; R< 14; R++) {
+			BLAKE256_GS_ALT(0, 4, 0x8, 0xC, 0x0);
+			BLAKE256_GS_ALT(1, 5, 0x9, 0xD, 0x2);
+			BLAKE256_GS_ALT(2, 6, 0xA, 0xE, 0x4);
+			BLAKE256_GS_ALT(3, 7, 0xB, 0xF, 0x6);
+			BLAKE256_GS_ALT(0, 5, 0xA, 0xF, 0x8);
+			BLAKE256_GS_ALT(1, 6, 0xB, 0xC, 0xA);
+			BLAKE256_GS_ALT(2, 7, 0x8, 0xD, 0xC);
+			BLAKE256_GS_ALT(3, 4, 0x9, 0xE, 0xE);
+	}
+	BLAKE256_COMPRESS_END;
+	hashedHeader[0] = sph_bswap32(H0);
+	hashedHeader[1] = sph_bswap32(H1);
+	hashedHeader[2] = sph_bswap32(H2);
+	hashedHeader[3] = sph_bswap32(H3);
+	hashedHeader[4] = sph_bswap32(H4);
+	hashedHeader[5] = sph_bswap32(H5);
+	hashedHeader[6] = sph_bswap32(H6);
+	hashedHeader[7] = sph_bswap32(H7);
+	//keccak32
+	keccak_gpu_state = (ulong*)hashedHeader;
+	keccak_gpu_state[5]=keccak_gpu_state[6]=keccak_gpu_state[7]=keccak_gpu_state[8]=keccak_gpu_state[9]=keccak_gpu_state[10]=keccak_gpu_state[11]=keccak_gpu_state[12]=keccak_gpu_state[13]=keccak_gpu_state[14]=keccak_gpu_state[15]=keccak_gpu_state[16]=keccak_gpu_state[17]=keccak_gpu_state[18]=keccak_gpu_state[19]=keccak_gpu_state[20]=keccak_gpu_state[21]=keccak_gpu_state[22]=keccak_gpu_state[23]=keccak_gpu_state[24]=0;
+	keccak_gpu_state[4] = 0x0000000000000001;
+	keccak_gpu_state[16] = 0x8000000000000000;
+	for (size_t i = 0; i < 24; i++) {
+			t[0] = keccak_gpu_state[0] ^ keccak_gpu_state[5] ^ keccak_gpu_state[10] ^ keccak_gpu_state[15] ^ keccak_gpu_state[20];
+			t[1] = keccak_gpu_state[1] ^ keccak_gpu_state[6] ^ keccak_gpu_state[11] ^ keccak_gpu_state[16] ^ keccak_gpu_state[21];
+			t[2] = keccak_gpu_state[2] ^ keccak_gpu_state[7] ^ keccak_gpu_state[12] ^ keccak_gpu_state[17] ^ keccak_gpu_state[22];
+			t[3] = keccak_gpu_state[3] ^ keccak_gpu_state[8] ^ keccak_gpu_state[13] ^ keccak_gpu_state[18] ^ keccak_gpu_state[23];
+			t[4] = keccak_gpu_state[4] ^ keccak_gpu_state[9] ^ keccak_gpu_state[14] ^ keccak_gpu_state[19] ^ keccak_gpu_state[24];
+			u[0] = t[4] ^ SPH_ROTL64(t[1], 1);
+			u[1] = t[0] ^ SPH_ROTL64(t[2], 1);
+			u[2] = t[1] ^ SPH_ROTL64(t[3], 1);
+			u[3] = t[2] ^ SPH_ROTL64(t[4], 1);
+			u[4] = t[3] ^ SPH_ROTL64(t[0], 1);
+			keccak_gpu_state[0] ^= u[0]; keccak_gpu_state[5] ^= u[0]; keccak_gpu_state[10] ^= u[0]; keccak_gpu_state[15] ^= u[0]; keccak_gpu_state[20] ^= u[0];
+			keccak_gpu_state[1] ^= u[1]; keccak_gpu_state[6] ^= u[1]; keccak_gpu_state[11] ^= u[1]; keccak_gpu_state[16] ^= u[1]; keccak_gpu_state[21] ^= u[1];
+			keccak_gpu_state[2] ^= u[2]; keccak_gpu_state[7] ^= u[2]; keccak_gpu_state[12] ^= u[2]; keccak_gpu_state[17] ^= u[2]; keccak_gpu_state[22] ^= u[2];
+			keccak_gpu_state[3] ^= u[3]; keccak_gpu_state[8] ^= u[3]; keccak_gpu_state[13] ^= u[3]; keccak_gpu_state[18] ^= u[3]; keccak_gpu_state[23] ^= u[3];
+			keccak_gpu_state[4] ^= u[4]; keccak_gpu_state[9] ^= u[4]; keccak_gpu_state[14] ^= u[4]; keccak_gpu_state[19] ^= u[4]; keccak_gpu_state[24] ^= u[4];
+			v = keccak_gpu_state[1];
+			keccak_gpu_state[1] = SPH_ROTL64(keccak_gpu_state[6], 44);
+			keccak_gpu_state[6] = SPH_ROTL64(keccak_gpu_state[9], 20);
+			keccak_gpu_state[9] = SPH_ROTL64(keccak_gpu_state[22], 61);
+			keccak_gpu_state[22] = SPH_ROTL64(keccak_gpu_state[14], 39);
+			keccak_gpu_state[14] = SPH_ROTL64(keccak_gpu_state[20], 18);
+			keccak_gpu_state[20] = SPH_ROTL64(keccak_gpu_state[2], 62);
+			keccak_gpu_state[2] = SPH_ROTL64(keccak_gpu_state[12], 43);
+			keccak_gpu_state[12] = SPH_ROTL64(keccak_gpu_state[13], 25);
+			keccak_gpu_state[13] = SPH_ROTL64(keccak_gpu_state[19], 8);
+			keccak_gpu_state[19] = SPH_ROTL64(keccak_gpu_state[23], 56);
+			keccak_gpu_state[23] = SPH_ROTL64(keccak_gpu_state[15], 41);
+			keccak_gpu_state[15] = SPH_ROTL64(keccak_gpu_state[4], 27);
+			keccak_gpu_state[4] = SPH_ROTL64(keccak_gpu_state[24], 14);
+			keccak_gpu_state[24] = SPH_ROTL64(keccak_gpu_state[21], 2);
+			keccak_gpu_state[21] = SPH_ROTL64(keccak_gpu_state[8], 55);
+			keccak_gpu_state[8] = SPH_ROTL64(keccak_gpu_state[16], 45);
+			keccak_gpu_state[16] = SPH_ROTL64(keccak_gpu_state[5], 36);
+			keccak_gpu_state[5] = SPH_ROTL64(keccak_gpu_state[3], 28);
+			keccak_gpu_state[3] = SPH_ROTL64(keccak_gpu_state[18], 21);
+			keccak_gpu_state[18] = SPH_ROTL64(keccak_gpu_state[17], 15);
+			keccak_gpu_state[17] = SPH_ROTL64(keccak_gpu_state[11], 10);
+			keccak_gpu_state[11] = SPH_ROTL64(keccak_gpu_state[7], 6);
+			keccak_gpu_state[7] = SPH_ROTL64(keccak_gpu_state[10], 3);
+			keccak_gpu_state[10] = SPH_ROTL64(v, 1);
+			v = keccak_gpu_state[0]; w = keccak_gpu_state[1]; keccak_gpu_state[0] ^= (~w) & keccak_gpu_state[2]; keccak_gpu_state[1] ^= (~keccak_gpu_state[2]) & keccak_gpu_state[3]; keccak_gpu_state[2] ^= (~keccak_gpu_state[3]) & keccak_gpu_state[4]; keccak_gpu_state[3] ^= (~keccak_gpu_state[4]) & v; keccak_gpu_state[4] ^= (~v) & w;
+			v = keccak_gpu_state[5]; w = keccak_gpu_state[6]; keccak_gpu_state[5] ^= (~w) & keccak_gpu_state[7]; keccak_gpu_state[6] ^= (~keccak_gpu_state[7]) & keccak_gpu_state[8]; keccak_gpu_state[7] ^= (~keccak_gpu_state[8]) & keccak_gpu_state[9]; keccak_gpu_state[8] ^= (~keccak_gpu_state[9]) & v; keccak_gpu_state[9] ^= (~v) & w;
+			v = keccak_gpu_state[10]; w = keccak_gpu_state[11]; keccak_gpu_state[10] ^= (~w) & keccak_gpu_state[12]; keccak_gpu_state[11] ^= (~keccak_gpu_state[12]) & keccak_gpu_state[13]; keccak_gpu_state[12] ^= (~keccak_gpu_state[13]) & keccak_gpu_state[14]; keccak_gpu_state[13] ^= (~keccak_gpu_state[14]) & v; keccak_gpu_state[14] ^= (~v) & w;
+			v = keccak_gpu_state[15]; w = keccak_gpu_state[16]; keccak_gpu_state[15] ^= (~w) & keccak_gpu_state[17]; keccak_gpu_state[16] ^= (~keccak_gpu_state[17]) & keccak_gpu_state[18]; keccak_gpu_state[17] ^= (~keccak_gpu_state[18]) & keccak_gpu_state[19]; keccak_gpu_state[18] ^= (~keccak_gpu_state[19]) & v; keccak_gpu_state[19] ^= (~v) & w;
+			v = keccak_gpu_state[20]; w = keccak_gpu_state[21]; keccak_gpu_state[20] ^= (~w) & keccak_gpu_state[22]; keccak_gpu_state[21] ^= (~keccak_gpu_state[22]) & keccak_gpu_state[23]; keccak_gpu_state[22] ^= (~keccak_gpu_state[23]) & keccak_gpu_state[24]; keccak_gpu_state[23] ^= (~keccak_gpu_state[24]) & v; keccak_gpu_state[24] ^= (~v) & w;
+			keccak_gpu_state[0] ^= RC[i];
+	}
+	hashB = (uint*)keccak_gpu_state;
+    //cubehash32
+	x0 = 0xEA2BD4B4; x1 = 0xCCD6F29F; x2 = 0x63117E71;
+	x3 = 0x35481EAE; x4 = 0x22512D5B; x5 = 0xE5D94E63;
+	x6 = 0x7E624131; x7 = 0xF4CC12BE; x8 = 0xC2D0B696;
+	x9 = 0x42AF2070; xa = 0xD0720C35; xb = 0x3361DA8C;
+	xc = 0x28CCECA4; xd = 0x8EF8AD83; xe = 0x4680AC00;
+	xf = 0x40E5FBAB;
+	xg = 0xD89041C3; xh = 0x6107FBD5;
+	xi = 0x6C859D41; xj = 0xF0B26679; xk = 0x09392549;
+	xl = 0x5FA25603; xm = 0x65C892FD; xn = 0x93CB6285;
+	xo = 0x2AF2B5AE; xp = 0x9E4B4E60; xq = 0x774ABFDD;
+	xr = 0x85254725; xs = 0x15815AEB; xt = 0x4AB6AAD6;
+	xu = 0x9CDAF8AF; xv = 0xD6032C0A;
+	x0 ^= (hashB[0]);
+	x1 ^= (hashB[1]);
+	x2 ^= (hashB[2]);
+	x3 ^= (hashB[3]);
+	x4 ^= (hashB[4]);
+	x5 ^= (hashB[5]);
+	x6 ^= (hashB[6]);
+	x7 ^= (hashB[7]);
+	SIXTEEN_ROUNDS;
+	x0 ^= 0x80;
+	SIXTEEN_ROUNDS;
+	xv ^= 0x01;
+	for (int i = 0; i < 10; ++i) SIXTEEN_ROUNDS;
+	hashedHeader[0] = x0;
+	hashedHeader[1] = x1;
+	hashedHeader[2] = x2;
+	hashedHeader[3] = x3;
+	hashedHeader[4] = x4;
+	hashedHeader[5] = x5;
+	hashedHeader[6] = x6;
+	hashedHeader[7] = x7;
+    //lyra2 start
+	state = (ulong4*)hashedHeader;	
+	state[1] = state[0]; state[2] = SPH_ULONG4(0x6a09e667f3bcc908UL, 0xbb67ae8584caa73bUL, 0x3c6ef372fe94f82bUL, 0xa54ff53a5f1d36f1UL); state[3] = SPH_ULONG4(0x510e527fade682d1UL, 0x9b05688c2b3e6c1fUL, 0x1f83d9abfb41bd6bUL, 0x5be0cd19137e2179UL);	for (int i = 0; i<12; i++) round_lyra(state); state[0] ^= SPH_ULONG4(0x20,0x20,0x20,0x01); state[1] ^= SPH_ULONG4(0x04,0x04,0x80,0x0100000000000000); for (int i = 0; i<12; i++) round_lyra(state); ps1 = (3 * 3); for (int i = 0; i < 4; i++) { uint s1 = ps1 - 3 * i; for (int j = 0; j < 3; j++) (DMatrix)[j+s1] = state[j]; round_lyra(state); }	
+    // squashed reduceduplexf - reduceDuplexf(state,DMatrix)
+	ps1 = 0; ps2 = (3 * 3 + 3 * 4); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 - i*3; for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state[j] ^= state1[j]; round_lyra(state); for (int j = 0; j < 3; j++) state1[j] ^= state[j]; for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state1[j]; }	
+	// squashed reduceduplexrowsetupf (1,0,2..) - reduceDuplexRowSetupf(uint rowIn, uint rowInOut, uint rowOut, ulong4 *state,  __global ulong4* DMatrix)
+	ps1 = (3 * 4 * 1); ps2 = (3 * 4 * 0); ps3 = (3 * 3 + 3 * 4 * 2); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 + i*3; uint s3 = ps3 - i*3;	for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state2[j] = (DMatrix)[j + s2]; for (int j = 0; j < 3; j++) { ulong4 tmp = state1[j] + state2[j]; state[j] ^= tmp; } round_lyra(state); for (int j = 0; j < 3; j++) { state1[j] ^= state[j]; (DMatrix)[j + s3] = state1[j]; } ((ulong*)state2)[0] ^= ((ulong*)state)[11];	for (int j = 0; j < 11; j++) ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];	for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; }
+	// squashed reduceduplexrowsetupf (2,1,3..) - reduceDuplexRowSetupf(uint rowIn, uint rowInOut, uint rowOut, ulong4 *state,  __global ulong4* DMatrix)
+	ps1 = (3 * 4 * 2); ps2 = (3 * 4 * 1); ps3 = (3 * 3 + 3 * 4 * 3); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 + i*3; uint s3 = ps3 - i*3;	for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state2[j] = (DMatrix)[j + s2]; for (int j = 0; j < 3; j++) { ulong4 tmp = state1[j] + state2[j]; state[j] ^= tmp; } round_lyra(state); for (int j = 0; j < 3; j++) { state1[j] ^= state[j]; (DMatrix)[j + s3] = state1[j]; } ((ulong*)state2)[0] ^= ((ulong*)state)[11];	for (int j = 0; j < 11; j++) ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];	for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; }
+    // last loops of lyra2
+	prev = 3; for (uint h = 0; h<4; h++) { rowa = state[0].x & 3; ulong4 state1[3], state2[3]; uint ps1 = (3 * 4 * prev);   uint ps2 = (3 * 4 * rowa); uint ps3 = (3 * 4 * h); for (int i = 0; i < 4; i++) { uint s1 = ps1 + i*3; uint s2 = ps2 + i*3; uint s3 = ps3 + i*3; for (int j = 0; j < 3; j++) state1[j] = (DMatrix)[j + s1]; for (int j = 0; j < 3; j++) state2[j] = (DMatrix)[j + s2]; for (int j = 0; j < 3; j++) state1[j] += state2[j]; for (int j = 0; j < 3; j++) state[j] ^= state1[j]; round_lyra(state); ((ulong*)state2)[0] ^= ((ulong*)state)[11]; for (int j = 0; j < 11; j++) ((ulong*)state2)[j + 1] ^= ((ulong*)state)[j];      if (rowa != h) { for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; for (int j = 0; j < 3; j++) (DMatrix)[j + s3] ^= state[j];  } else { for (int j = 0; j < 3; j++) state2[j] ^= state[j]; for (int j = 0; j < 3; j++) (DMatrix)[j + s2] = state2[j]; }} prev = h; } shift = (3 * 4 * rowa);	for (int j = 0; j < 3; j++) state[j] ^= (DMatrix)[j+shift]; for (int i = 0; i < 12; i++) round_lyra(state);	
+	hashB = (uint*)state;
+    //keccak32
+        in_dwords = (ulong*)hashB;
+        h[8] = skein_ks_parity;
+        for (int i = 0; i<8; i++) { h[i] = SKEIN_IV512_256[i]; h[8] ^= h[i]; }  t[0]=t12[0]; t[1]=t12[1]; t[2]=t12[2];
+        dt0= (in_dwords[0]); dt1= (in_dwords[1]); dt2= (in_dwords[2]); dt3= (in_dwords[3]);
+        p0 = h[0] + dt0;p1 = h[1] + dt1;p2 = h[2] + dt2;p3 = h[3] + dt3;p4 = h[4];p5 = h[5] + t[0];p6 = h[6] + t[1];p7 = h[7];
+        for (int i = 1; i<19; i+=2) {Round_8_512(p0,p1,p2,p3,p4,p5,p6,p7,i);}
+        p0 ^= dt0; p1 ^= dt1; p2 ^= dt2; p3 ^= dt3;
+        h[0] = p0;h[1] = p1;h[2] = p2;h[3] = p3;h[4] = p4;h[5] = p5;h[6] = p6;h[7] = p7;h[8] = skein_ks_parity;
+        for (int i = 0; i<8; i++) { h[8] ^= h[i]; } t[0] = t12[3];t[1] = t12[4];t[2] = t12[5];p5 += t[0];p6 += t[1];
+        for (int i = 1; i<19; i+=2) { Round_8_512(p0, p1, p2, p3, p4, p5, p6, p7, i); }
+        out_dwords[0] = (p0);out_dwords[1] = (p1);out_dwords[2] = (p2); out_dwords[3] = (p3);
+        hashB = (uint*)out_dwords;
+    //cubehash32
+	x0 = 0xEA2BD4B4; x1 = 0xCCD6F29F; x2 = 0x63117E71;
+	x3 = 0x35481EAE; x4 = 0x22512D5B; x5 = 0xE5D94E63;
+	x6 = 0x7E624131; x7 = 0xF4CC12BE; x8 = 0xC2D0B696;
+	x9 = 0x42AF2070; xa = 0xD0720C35; xb = 0x3361DA8C;
+	xc = 0x28CCECA4; xd = 0x8EF8AD83; xe = 0x4680AC00;
+	xf = 0x40E5FBAB;
+	xg = 0xD89041C3; xh = 0x6107FBD5;
+	xi = 0x6C859D41; xj = 0xF0B26679; xk = 0x09392549;
+	xl = 0x5FA25603; xm = 0x65C892FD; xn = 0x93CB6285;
+	xo = 0x2AF2B5AE; xp = 0x9E4B4E60; xq = 0x774ABFDD;
+	xr = 0x85254725; xs = 0x15815AEB; xt = 0x4AB6AAD6;
+	xu = 0x9CDAF8AF; xv = 0xD6032C0A;
+	x0 ^= (hashB[0]);
+	x1 ^= (hashB[1]);
+	x2 ^= (hashB[2]);
+	x3 ^= (hashB[3]);
+	x4 ^= (hashB[4]);
+	x5 ^= (hashB[5]);
+	x6 ^= (hashB[6]);
+	x7 ^= (hashB[7]);
+	SIXTEEN_ROUNDS;
+	x0 ^= 0x80;
+	SIXTEEN_ROUNDS;
+	xv ^= 0x01;
+	for (int i = 0; i < 10; ++i) SIXTEEN_ROUNDS;
+    //bmw32
+dh[0] = 0x40414243; dh[1] = 0x44454647; dh[2] = 0x48494A4B; dh[3] = 0x4C4D4E4F;
+dh[4] = 0x50515253; dh[5] = 0x54555657; dh[6] = 0x58595A5B; dh[7] = 0x5C5D5E5F;
+dh[8] = 0x60616263; dh[9] = 0x64656667; dh[10] = 0x68696A6B; dh[11] = 0x6C6D6E6F;
+dh[12] = 0x70717273; dh[13] = 0x74757677; dh[14] = 0x78797A7B; dh[15] = 0x7C7D7E7F;
+final_s[0] = 0xaaaaaaa0; final_s[1] = 0xaaaaaaa1; final_s[2] = 0xaaaaaaa2; final_s[3] = 0xaaaaaaa3; 
+final_s[4] = 0xaaaaaaa4; final_s[5] = 0xaaaaaaa5; final_s[6] = 0xaaaaaaa6; final_s[7] = 0xaaaaaaa7; 
+final_s[8] = 0xaaaaaaa8; final_s[9] = 0xaaaaaaa9; final_s[10] = 0xaaaaaaaa; final_s[11] = 0xaaaaaaab;
+final_s[12] = 0xaaaaaaac; final_s[13] = 0xaaaaaaad; final_s[14] = 0xaaaaaaae; final_s[15] = 0xaaaaaaaf;
+        message[0] = x0; message[1] = x1; message[2] = x2; message[3] = x3; message[4] = x4;
+        message[5] = x5; message[6] = x6; message[7] = x7; message[9] = 0; message[10] = 0;
+        message[11] = 0; message[12] = 0; message[13] = 0; message[8]= 0x80; message[14]=0x100; message[15]=0;
+        //compression256 message_dh_start
+        Q[0]=ss0((message[5]^dh[5])-(message[7]^dh[7])+(message[10]^dh[10])+(message[13]^dh[13])+(message[14]^dh[14]))+dh[1];
+        Q[1]=ss1((message[6]^dh[6])-(message[8]^dh[8])+(message[11]^dh[11])+(message[14]^dh[14])-(message[15]^dh[15]))+dh[2];
+        Q[2]=ss2((message[0]^dh[0])+(message[7]^dh[7])+(message[9]^dh[9])-(message[12]^dh[12])+(message[15]^dh[15]))+dh[3];
+        Q[3]=ss3((message[0]^dh[0])-(message[1]^dh[1])+(message[8]^dh[8])-(message[10]^dh[10])+(message[13]^dh[13]))+dh[4];
+        Q[4]=ss4((message[1]^dh[1])+(message[2]^dh[2])+(message[9]^dh[9])-(message[11]^dh[11])-(message[14]^dh[14]))+dh[5];
+        Q[5]=ss0((message[3]^dh[3])-(message[2]^dh[2])+(message[10]^dh[10])-(message[12]^dh[12])+(message[15]^dh[15]))+dh[6];
+        Q[6]=ss1((message[4]^dh[4])-(message[0]^dh[0])-(message[3]^dh[3])-(message[11]^dh[11])+(message[13]^dh[13]))+dh[7];
+        Q[7]=ss2((message[1]^dh[1])-(message[4]^dh[4])-(message[5]^dh[5])-(message[12]^dh[12])-(message[14]^dh[14]))+dh[8];
+        Q[8]=ss3((message[2]^dh[2])-(message[5]^dh[5])-(message[6]^dh[6])+(message[13]^dh[13])-(message[15]^dh[15]))+dh[9];
+        Q[9]=ss4((message[0]^dh[0])-(message[3]^dh[3])+(message[6]^dh[6])-(message[7]^dh[7])+(message[14]^dh[14]))+dh[10];
+        Q[10]=ss0((message[8]^dh[8])-(message[1]^dh[1])-(message[4]^dh[4])-(message[7]^dh[7])+(message[15]^dh[15]))+dh[11];
+        Q[11]=ss1((message[8]^dh[8])-(message[0]^dh[0])-(message[2]^dh[2])-(message[5]^dh[5])+(message[9]^dh[9]))+dh[12];
+        Q[12]=ss2((message[1]^dh[1])+(message[3]^dh[3])-(message[6]^dh[6])-(message[9]^dh[9])+(message[10]^dh[10]))+dh[13];
+        Q[13]=ss3((message[2]^dh[2])+(message[4]^dh[4])+(message[7]^dh[7])+(message[10]^dh[10])+(message[11]^dh[11]))+dh[14];
+        Q[14]=ss4((message[3]^dh[3])-(message[5]^dh[5])+(message[8]^dh[8])-(message[11]^dh[11])-(message[12]^dh[12]))+dh[15];
+        Q[15]=ss0((message[12]^dh[12])-(message[4]^dh[4])-(message[6]^dh[6])-(message[9]^dh[9])+(message[13]^dh[13]))+dh[0];
+        Q[16]=expand32_1(16,message,dh,Q);
+        Q[17]=expand32_1(17,message,dh,Q);
+        Q[18]=expand32_2(18,message,dh,Q);
+        Q[19]=expand32_2(19,message,dh,Q);
+        Q[20]=expand32_2(20,message,dh,Q);
+        Q[21]=expand32_2(21,message,dh,Q);
+        Q[22]=expand32_2(22,message,dh,Q);
+        Q[23]=expand32_2(23,message,dh,Q);
+        Q[24]=expand32_2(24,message,dh,Q);
+        Q[25]=expand32_2(25,message,dh,Q);
+        Q[26]=expand32_2(26,message,dh,Q);
+        Q[27]=expand32_2(27,message,dh,Q);
+        Q[28]=expand32_2(28,message,dh,Q);
+        Q[29]=expand32_2(29,message,dh,Q);
+        Q[30]=expand32_2(30,message,dh,Q);
+        Q[31]=expand32_2(31,message,dh,Q);
+        XL32=Q[16]^Q[17]^Q[18]^Q[19]^Q[20]^Q[21]^Q[22]^Q[23];
+        XH32=XL32^Q[24]^Q[25]^Q[26]^Q[27]^Q[28]^Q[29]^Q[30]^Q[31];
+        dh[0]=(shl(XH32,5)^shr(Q[16],5)^message[0])+(XL32^Q[24]^Q[0]);
+        dh[1]=(shr(XH32,7)^shl(Q[17],8)^message[1])+(XL32^Q[25]^Q[1]);
+        dh[2]=(shr(XH32,5)^shl(Q[18],5)^message[2])+(XL32^Q[26]^Q[2]);
+        dh[3]=(shr(XH32,1)^shl(Q[19],5)^message[3])+(XL32^Q[27]^Q[3]);
+        dh[4]=(shr(XH32,3)^Q[20]^message[4])+(XL32^Q[28]^Q[4]);
+        dh[5]=(shl(XH32,6)^shr(Q[21],6)^message[5])+(XL32^Q[29]^Q[5]);
+        dh[6]=(shr(XH32,4)^shl(Q[22],6)^message[6])+(XL32^Q[30]^Q[6]);
+        dh[7]=(shr(XH32,11)^shl(Q[23],2)^message[7])+(XL32^Q[31]^Q[7]);
+        dh[8]=SPH_ROTL32(dh[4],9)+(XH32^Q[24]^message[8])+(shl(XL32,8)^Q[23]^Q[8]);
+        dh[9]=SPH_ROTL32(dh[5],10)+(XH32^Q[25]^message[9])+(shr(XL32,6)^Q[16]^Q[9]);
+        dh[10]=SPH_ROTL32(dh[6],11)+(XH32^Q[26]^message[10])+(shl(XL32,6)^Q[17]^Q[10]);
+        dh[11]=SPH_ROTL32(dh[7],12)+(XH32^Q[27]^message[11])+(shl(XL32,4)^Q[18]^Q[11]);
+        dh[12]=SPH_ROTL32(dh[0],13)+(XH32^Q[28]^message[12])+(shr(XL32,3)^Q[19]^Q[12]);
+        dh[13]=SPH_ROTL32(dh[1],14)+(XH32^Q[29]^message[13])+(shr(XL32,4)^Q[20]^Q[13]);
+        dh[14]=SPH_ROTL32(dh[2],15)+(XH32^Q[30]^message[14])+(shr(XL32,7)^Q[21]^Q[14]);
+        dh[15]=SPH_ROTL32(dh[3],16)+(XH32^Q[31]^message[15])+(shr(XL32,2)^Q[22]^Q[15]);
+        //compression256 message_dh_end
+	//compression256 dh_finals_start
+	Q[0]=ss0((dh[5]^final_s[5])-(dh[7]^final_s[7])+(dh[10]^final_s[10])+(dh[13]^final_s[13])+(dh[14]^final_s[14]))+final_s[1];
+	Q[1]=ss1((dh[6]^final_s[6])-(dh[8]^final_s[8])+(dh[11]^final_s[11])+(dh[14]^final_s[14])-(dh[15]^final_s[15]))+final_s[2];
+	Q[2]=ss2((dh[0]^final_s[0])+(dh[7]^final_s[7])+(dh[9]^final_s[9])-(dh[12]^final_s[12])+(dh[15]^final_s[15]))+final_s[3];
+	Q[3]=ss3((dh[0]^final_s[0])-(dh[1]^final_s[1])+(dh[8]^final_s[8])-(dh[10]^final_s[10])+(dh[13]^final_s[13]))+final_s[4];
+	Q[4]=ss4((dh[1]^final_s[1])+(dh[2]^final_s[2])+(dh[9]^final_s[9])-(dh[11]^final_s[11])-(dh[14]^final_s[14]))+final_s[5];
+	Q[5]=ss0((dh[3]^final_s[3])-(dh[2]^final_s[2])+(dh[10]^final_s[10])-(dh[12]^final_s[12])+(dh[15]^final_s[15]))+final_s[6];
+	Q[6]=ss1((dh[4]^final_s[4])-(dh[0]^final_s[0])-(dh[3]^final_s[3])-(dh[11]^final_s[11])+(dh[13]^final_s[13]))+final_s[7];
+	Q[7]=ss2((dh[1]^final_s[1])-(dh[4]^final_s[4])-(dh[5]^final_s[5])-(dh[12]^final_s[12])-(dh[14]^final_s[14]))+final_s[8];
+	Q[8]=ss3((dh[2]^final_s[2])-(dh[5]^final_s[5])-(dh[6]^final_s[6])+(dh[13]^final_s[13])-(dh[15]^final_s[15]))+final_s[9];
+	Q[9]=ss4((dh[0]^final_s[0])-(dh[3]^final_s[3])+(dh[6]^final_s[6])-(dh[7]^final_s[7])+(dh[14]^final_s[14]))+final_s[10];
+	Q[10]=ss0((dh[8]^final_s[8])-(dh[1]^final_s[1])-(dh[4]^final_s[4])-(dh[7]^final_s[7])+(dh[15]^final_s[15]))+final_s[11];
+	Q[11]=ss1((dh[8]^final_s[8])-(dh[0]^final_s[0])-(dh[2]^final_s[2])-(dh[5]^final_s[5])+(dh[9]^final_s[9]))+final_s[12];
+	Q[12]=ss2((dh[1]^final_s[1])+(dh[3]^final_s[3])-(dh[6]^final_s[6])-(dh[9]^final_s[9])+(dh[10]^final_s[10]))+final_s[13];
+	Q[13]=ss3((dh[2]^final_s[2])+(dh[4]^final_s[4])+(dh[7]^final_s[7])+(dh[10]^final_s[10])+(dh[11]^final_s[11]))+final_s[14];
+	Q[14]=ss4((dh[3]^final_s[3])-(dh[5]^final_s[5])+(dh[8]^final_s[8])-(dh[11]^final_s[11])-(dh[12]^final_s[12]))+final_s[15];
+	Q[15]=ss0((dh[12]^final_s[12])-(dh[4]^final_s[4])-(dh[6]^final_s[6])-(dh[9]^final_s[9])+(dh[13]^final_s[13]))+final_s[0];
+	Q[16]=expand32_1(16,dh,final_s,Q);
+	Q[17]=expand32_1(17,dh,final_s,Q);
+	Q[18]=expand32_2(18,dh,final_s,Q);
+	Q[19]=expand32_2(19,dh,final_s,Q);
+	Q[20]=expand32_2(20,dh,final_s,Q);
+	Q[21]=expand32_2(21,dh,final_s,Q);
+	Q[22]=expand32_2(22,dh,final_s,Q);
+	Q[23]=expand32_2(23,dh,final_s,Q);
+	Q[24]=expand32_2(24,dh,final_s,Q);
+	Q[25]=expand32_2(25,dh,final_s,Q);
+	Q[26]=expand32_2(26,dh,final_s,Q);
+	Q[27]=expand32_2(27,dh,final_s,Q);
+	Q[28]=expand32_2(28,dh,final_s,Q);
+	Q[29]=expand32_2(29,dh,final_s,Q);
+	Q[30]=expand32_2(30,dh,final_s,Q);
+	Q[31]=expand32_2(31,dh,final_s,Q);
+	XL32=Q[16]^Q[17]^Q[18]^Q[19]^Q[20]^Q[21]^Q[22]^Q[23];
+	XH32=XL32^Q[24]^Q[25]^Q[26]^Q[27]^Q[28]^Q[29]^Q[30]^Q[31];
+	final_s[0]=(shl(XH32,5)^shr(Q[16],5)^dh[0])+(XL32^Q[24]^Q[0]);
+	final_s[1]=(shr(XH32,7)^shl(Q[17],8)^dh[1])+(XL32^Q[25]^Q[1]);
+	final_s[2]=(shr(XH32,5)^shl(Q[18],5)^dh[2])+(XL32^Q[26]^Q[2]);
+	final_s[3]=(shr(XH32,1)^shl(Q[19],5)^dh[3])+(XL32^Q[27]^Q[3]);
+	final_s[4]=(shr(XH32,3)^Q[20]^dh[4])+(XL32^Q[28]^Q[4]);
+	final_s[5]=(shl(XH32,6)^shr(Q[21],6)^dh[5])+(XL32^Q[29]^Q[5]);
+	final_s[6]=(shr(XH32,4)^shl(Q[22],6)^dh[6])+(XL32^Q[30]^Q[6]);
+	final_s[7]=(shr(XH32,11)^shl(Q[23],2)^dh[7])+(XL32^Q[31]^Q[7]);
+	final_s[8]=SPH_ROTL32(final_s[4],9)+(XH32^Q[24]^dh[8])+(shl(XL32,8)^Q[23]^Q[8]);
+	final_s[9]=SPH_ROTL32(final_s[5],10)+(XH32^Q[25]^dh[9])+(shr(XL32,6)^Q[16]^Q[9]);
+	final_s[10]=SPH_ROTL32(final_s[6],11)+(XH32^Q[26]^dh[10])+(shl(XL32,6)^Q[17]^Q[10]);
+	final_s[11]=SPH_ROTL32(final_s[7],12)+(XH32^Q[27]^dh[11])+(shl(XL32,4)^Q[18]^Q[11]);
+	final_s[12]=SPH_ROTL32(final_s[0],13)+(XH32^Q[28]^dh[12])+(shr(XL32,3)^Q[19]^Q[12]);
+	final_s[13]=SPH_ROTL32(final_s[1],14)+(XH32^Q[29]^dh[13])+(shr(XL32,4)^Q[20]^Q[13]);
+	final_s[14]=SPH_ROTL32(final_s[2],15)+(XH32^Q[30]^dh[14])+(shr(XL32,7)^Q[21]^Q[14]);
+	final_s[15]=SPH_ROTL32(final_s[3],16)+(XH32^Q[31]^dh[15])+(shr(XL32,2)^Q[22]^Q[15]);
+	//compression256 dh_finals_end
+
+	ulong check = as_ulong((uint2)(final_s[14], final_s[15]));
+
+	// target itself should be in little-endian format, 
 #ifdef NVIDIA
-	if (hash_target <= target)
-	{
+
+	if (check <= target){
+                block[0] = (final_s[8]);
+                block[1] = (final_s[9]);
+                block[2] = (final_s[10]);
+                block[3] = (final_s[11]);
+                block[4] = (final_s[12]);
+                block[5] = (final_s[13]);
+                block[6] = (final_s[14]);
+                block[7] = (final_s[15]);
 		uint slot = atomic_inc(&g_output[MAX_OUTPUTS]);
 		g_output[slot & MAX_OUTPUTS] = gid;
 	}
 #else
-	if (hash_target <= target)
-	{
+	if (check <= target){
 		uint slot = min(MAX_OUTPUTS-1u, convert_uint(atomic_inc(&g_output[MAX_OUTPUTS])));
 		g_output[slot] = gid;
 	}
 #endif
 }
-
-#else
-
-__attribute__((reqd_work_group_size(WORKSIZE, 1, 1)))
-__kernel void search(
-	__global volatile hash32_t* restrict g_output,
-	__constant uint const* g_header,
-	__global uint16 const* g_dag,
-	__global uchar* g_lyre_nodes,
-	const ulong DAG_ITEM_COUNT,
-	const uint height
-	)
-{
-	const uint gid = get_global_id(0); // i.e. nonce
-	const uint hash_output_idx = gid - get_global_offset(0);
-	__global ulong4 *DMatrix = (__global ulong4 *)(g_lyre_nodes + (LYRA_SCRATCHBUF_SIZE * (hash_output_idx % MAX_GLOBAL_THREADS)));
-
-	hashimoto_global(block, gid, g_dag, DAG_ITEM_COUNT, height, DMatrix, g_output[hash_output_idx]);
-}
-
-#endif
 
 #ifndef COMPILE_MAIN_ONLY
 
@@ -1741,7 +1588,6 @@ __kernel void GenerateDAG(uint start, __global const uint16 *_Cache, __global ui
 		uint ParentIdx = fnv(NodeIdx ^ parent, DAGNode.dwords[parent & 7]) % LIGHT_SIZE; // NOTE: LIGHT_SIZE == items, &7 == %8
 		__global const Node *ParentNode = Cache + ParentIdx;
 
-		#pragma unroll
 		for (uint x = 0; x < 2; ++x)
 		{
 			// NOTE: fnv, we're basically operating on 4 ints at a time here
@@ -1776,4 +1622,3 @@ __kernel void GenerateDAG(uint start, __global const uint16 *_Cache, __global ui
 }
 
 #endif
-
