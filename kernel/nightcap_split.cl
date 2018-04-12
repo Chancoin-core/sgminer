@@ -85,6 +85,7 @@ inline uint4 fnv4(const uint4 v1, const uint4 v2) {
 #define NVIDIA
 #else
 #pragma OPENCL EXTENSION cl_amd_media_ops2 : enable
+#define AMD
 #define ROTL64_1(x, y)  amd_bitalign((x), (x).s10, (32U - y))
 #define ROTL64_2(x, y)  amd_bitalign((x).s10, (x), (32U - y))
 #define ROTL64_8(x, y)  amd_bitalign((x), (x).s10, 24U)
@@ -434,29 +435,28 @@ __constant static const uint2 keccak_round_constants35[24] = {
 // SPH_ROTL64(s[23], 56);     // 64-56=8
 //#define KROR8(x) as_uint2(rotate(as_ulong(x),  (ulong)(56)) & 0xFFFFFFFFFFFFFFFFUL)
 
-#ifndef NVIDIA
-
+#if defined(AMD)
 
 inline uint2 ROL2(const uint2 v, const int n)
 {
 	uint2 result;
 	if (n <= 32)
 	{
-		//result.y = ((v.y << (n)) | (v.x >> (32 - n)));
-		//result.x = ((v.x << (n)) | (v.y >> (32 - n)));
 		return amd_bitalign((v).xy, (v).yx, 32 - n);
 	}
 	else
 	{
-		//result.y = ((v.x << (n - 32)) | (v.y >> (64 - n)));
-		//result.x = ((v.y << (n - 32)) | (v.x >> (64 - n)));
 		return amd_bitalign((v).yx, (v).xy, 64 - n);
 	}
 	return result;
 }
 
-
 #define KROL2(vv, r) ROL2(vv,r)
+
+#elif defined(NVIDIA)
+
+#define KROL2(vv, r) rol2(vv, r)
+
 #else
 
 inline uint2 ROL2(const uint2 v, const int n)
@@ -475,8 +475,8 @@ inline uint2 ROL2(const uint2 v, const int n)
 	return result;
 }
 
-
 #define KROL2(vv, r) ROL2(vv, r)
+
 #endif
 
 // SPH_ROTL64(s[19], 8);
