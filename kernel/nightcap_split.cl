@@ -1848,10 +1848,10 @@ inline uint4 hashimoto_mix(uint* headerHash, __global const uint16 *dag, const u
 	}
 	
 	uint4 mixhash;
-	mixhash[0] = fnv(fnv(fnv(mix.values[0],  mix.values[0 + 1]),  mix.values[0 + 2]),  mix.values[0 + 3]);
-	mixhash[1] = fnv(fnv(fnv(mix.values[4],  mix.values[4 + 1]),  mix.values[4 + 2]),  mix.values[4 + 3]);
-	mixhash[2] = fnv(fnv(fnv(mix.values[8],  mix.values[8 + 1]),  mix.values[8 + 2]),  mix.values[8 + 3]);
-	mixhash[3] = fnv(fnv(fnv(mix.values[12], mix.values[12 + 1]), mix.values[12 + 2]), mix.values[12 + 3]);
+	mixhash.x = fnv(fnv(fnv(mix.values[0],  mix.values[0 + 1]),  mix.values[0 + 2]),  mix.values[0 + 3]);
+	mixhash.y = fnv(fnv(fnv(mix.values[4],  mix.values[4 + 1]),  mix.values[4 + 2]),  mix.values[4 + 3]);
+	mixhash.z = fnv(fnv(fnv(mix.values[8],  mix.values[8 + 1]),  mix.values[8 + 2]),  mix.values[8 + 3]);
+	mixhash.w = fnv(fnv(fnv(mix.values[12], mix.values[12 + 1]), mix.values[12 + 2]), mix.values[12 + 3]);
 	return mixhash;
 }
 
