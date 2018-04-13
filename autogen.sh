@@ -1,7 +1,7 @@
 #!/bin/sh
 unamestr=`uname`
 
-if [[ "$unamestr" == 'Darwin' ]]; then
+if [ "$unamestr" = 'Darwin' ]; then
 bs_dir="$(dirname $(greadlink -f $0))"
 else
 bs_dir="$(dirname $(readlink -f $0))"
