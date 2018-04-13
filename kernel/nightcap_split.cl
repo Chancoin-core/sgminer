@@ -1949,10 +1949,10 @@ __kernel void search6(
   {
 		uint4 mixHash = hashimoto_mix(blockToHash, dag, DAG_ITEM_COUNT);
 		blockToHash[8] = height;
-		blockToHash[9] = mixHash[0];
-		blockToHash[10] = mixHash[1];
-		blockToHash[11] = mixHash[2];
-		blockToHash[12] = mixHash[3];
+		blockToHash[9] = mixHash.x;
+		blockToHash[10] = mixHash.y;
+		blockToHash[11] = mixHash.z;
+		blockToHash[12] = mixHash.w;
 	}
 
 	blakeKeccak52(blockToHash, hash->u2, isolate);
