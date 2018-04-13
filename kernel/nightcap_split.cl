@@ -453,10 +453,6 @@ inline uint2 ROL2(const uint2 v, const int n)
 
 #define KROL2(vv, r) ROL2(vv,r)
 
-#elif defined(NVIDIA)
-
-#define KROL2(vv, r) rol2(vv, r)
-
 #else
 
 inline uint2 ROL2(const uint2 v, const int n)
