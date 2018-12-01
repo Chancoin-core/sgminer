@@ -357,7 +357,7 @@ typedef union _Node
 	uint dwords[16];
 	uint2 qwords[8];
 	uint4 dqwords[4];
-} Node;
+} Node; // 64 bytes
 
 static void SHA3_512(uint2 *s, uint isolate)
 {

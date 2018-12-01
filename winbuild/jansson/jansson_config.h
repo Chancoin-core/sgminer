@@ -58,5 +58,7 @@
 #define JSON_HAVE_LOCALECONV 1
 
 
+#define JSON_PARSER_MAX_DEPTH 2048
+
 
 #endif

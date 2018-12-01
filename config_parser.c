@@ -439,6 +439,9 @@ char *set_profile_worksize(const char *arg)
 /***************************************
 * Helper Functions
 ****************************************/
+
+#if JANSSON_VERSION_HEX < 133888
+
 json_t *json_sprintf(const char *fmt, ...)
 {
   va_list args;
@@ -465,6 +468,8 @@ json_t *json_sprintf(const char *fmt, ...)
   //return json string
   return json_string(buf);
 }
+
+#endif
 
 //set last json error
 char *set_last_json_error(const char *fmt, ...)

@@ -1,9 +1,11 @@
-#ifndef __ETHASH_H
-#define __ETHASH_H
+#ifndef _NIGHTCAP_H
+#define _NIGHTCAP_H
 
 #include <stdint.h>
+#include <math.h>
+#include "miner.h"
 
-static uint64_t dag_sizes[2048] =
+static uint64_t nightcap_dag_sizes[2048] =
 {
 	1073739904U, 1082130304U, 1090514816U, 1098906752U, 1107293056U,
 	1115684224U, 1124070016U, 1132461952U, 1140849536U, 1149232768U,
@@ -417,7 +419,7 @@ static uint64_t dag_sizes[2048] =
 	18228444544U, 18236833408U, 18245220736U
 };
 
-static uint64_t cache_sizes[2048] =
+static uint64_t nightcap_cache_sizes[2048] =
 {
 	16776896U, 16907456U, 17039296U, 17170112U, 17301056U, 17432512U, 17563072U,
 	17693888U, 17824192U, 17955904U, 18087488U, 18218176U, 18349504U, 18481088U,
@@ -748,68 +750,70 @@ static uint64_t cache_sizes[2048] =
 	284950208U, 285081536U
 };
 
-static bool replaced = false;
+static int replaced = 0;
 
-#define WORD_BYTES 4
-#define DATASET_BYTES_INIT 536870912
-#define DATASET_BYTES_GROWTH 12582912
-#define CACHE_BYTES_INIT 8388608
-#define CACHE_BYTES_GROWTH 196608
-#define EPOCH_LENGTH 400
-#define CACHE_MULTIPLIER 64
-#define MIX_BYTES 64
-#define HASH_BYTES 32
-#define DATASET_PARENTS 256
-#define CACHE_ROUNDS 3
-#define ACCESSES 64
-#define FNV_PRIME 0x01000193
+#define NIGHTCAP_WORD_BYTES 4
+#define NIGHTCAP_DATASET_BYTES_INIT 536870912
+#define NIGHTCAP_DATASET_BYTES_GROWTH 12582912
+#define NIGHTCAP_CACHE_BYTES_INIT 8388608
+#define NIGHTCAP_CACHE_BYTES_GROWTH 196608
+#define NIGHTCAP_EPOCH_LENGTH 400
+#define NIGHTCAP_CACHE_MULTIPLIER 64
+#define NIGHTCAP_MIX_BYTES 64
+#define NIGHTCAP_HASH_BYTES 32
+#define NIGHTCAP_DATASET_PARENTS 256
+#define NIGHTCAP_CACHE_ROUNDS 3
+#define NIGHTCAP_ACCESSES 64
+#define NIGHTCAP_FNV_PRIME 0x01000193
 
-static int is_prime(unsigned long number) {
-    if (number <= 1) return false;
-    if((number % 2 == 0) && number > 2) return false;
-    for(unsigned long i = 3; i < sqrt(number); i += 2) {
+static int nightcap_is_prime(uint64_t number) {
+    if (number <= 1) return 0;
+    if((number % 2 == 0) && number > 2) return 0;
+    for(uint64_t i = 3; i < sqrt(number); i += 2) {
         if(number % i == 0)
-            return false;
+            return 0;
     }
-    return true;
+    return 1;
 }
 
-static unsigned long get_cache_size(unsigned long block_number) {
-    unsigned long sz = CACHE_BYTES_INIT + (CACHE_BYTES_GROWTH * round(sqrt(6*(block_number / EPOCH_LENGTH))));
-    sz -= HASH_BYTES;
-    while (!is_prime(sz / HASH_BYTES)) {
-        sz -= 2 * HASH_BYTES;
-    }
-    return sz;
-}
-
-static unsigned long get_full_size(unsigned long block_number) {
-    unsigned long sz = DATASET_BYTES_INIT + (DATASET_BYTES_GROWTH * round(sqrt(6*floor(((float)block_number / (float)EPOCH_LENGTH)))));
-    sz -= MIX_BYTES;
-    while (!is_prime(sz / MIX_BYTES)) {
-        sz -= 2 * MIX_BYTES;
+static uint64_t nightcap_get_cache_size(uint64_t block_number) {
+    uint64_t sz = NIGHTCAP_CACHE_BYTES_INIT + (NIGHTCAP_CACHE_BYTES_GROWTH * round(sqrt(6*(block_number / NIGHTCAP_EPOCH_LENGTH))));
+    sz -= NIGHTCAP_HASH_BYTES;
+    while (!nightcap_is_prime(sz / NIGHTCAP_HASH_BYTES)) {
+        sz -= 2 * NIGHTCAP_HASH_BYTES;
     }
     return sz;
 }
 
-static uint64_t table_trampoline_cache(int EpochNum) {
-	if(!replaced) {
-		for(int i = 0; i < 2048; i++) {
-			cache_sizes[i] = get_cache_size(EpochNum * 400);
-			dag_sizes[i] = get_full-size(EpochNum * 400);
-		}
-	}
-	return cache_sizes[EpochNum];
+static uint64_t nightcap_get_full_size(uint64_t block_number) {
+    uint64_t sz = NIGHTCAP_DATASET_BYTES_INIT + (NIGHTCAP_DATASET_BYTES_GROWTH * round(sqrt(6 * (block_number / NIGHTCAP_EPOCH_LENGTH))));
+    sz -= NIGHTCAP_MIX_BYTES;
+    while (!nightcap_is_prime(sz / NIGHTCAP_MIX_BYTES)) {
+        sz -= 2 * NIGHTCAP_MIX_BYTES;
+    }
+    return sz;
 }
 
-static uint64_t table_trampoline_dag(int EpochNum) {
+static uint64_t nightcap_table_trampoline_cache(uint32_t EpochNum) {
 	if(!replaced) {
 		for(int i = 0; i < 2048; i++) {
-			cache_sizes[i] = get_cache_size(EpochNum * 400);
-			dag_sizes[i] = get_full-size(EpochNum * 400);
+			nightcap_cache_sizes[i] = nightcap_get_cache_size(EpochNum * 400);
+			nightcap_dag_sizes[i] = nightcap_get_full_size(EpochNum * 400);
 		}
+		replaced = 1;
 	}
-	return dag_sizes[EpochNum];
+	return nightcap_cache_sizes[EpochNum];
+}
+
+static uint64_t nightcap_table_trampoline_dag(uint32_t EpochNum) {
+	if(!replaced) {
+		for(int i = 0; i < 2048; i++) {
+			nightcap_cache_sizes[i] = nightcap_get_cache_size(EpochNum * 400);
+			nightcap_dag_sizes[i] = nightcap_get_full_size(EpochNum * 400);
+		}
+		replaced = 1;
+	}
+	return nightcap_dag_sizes[EpochNum];
 }
 
 
@@ -817,8 +821,18 @@ static uint64_t table_trampoline_dag(int EpochNum) {
 #define NightcapGetDAGSize(EpochNum)	table_trampoline_dag(EpochNum)
 
 struct work;
-void NightcapGenerateCache(void *cache_nodes_in, uint8_t * const seedhash, uint64_t cache_size);
-void ethash_regenhash(struct work *work);
-uint32_t NightcapCalcEpochNumber(uint8_t *SeedHash);
+void NightcapGenerateCache(uint32_t *cache_nodes_in, uint8_t * const seedhash, uint64_t cache_size);
+
+
+typedef union _NightcapNode
+{
+	uint8_t bytes[8 * 4];
+	uint32_t words[8];
+	uint64_t double_words[8 / 2];
+} NightcapNode;
+
+
+void nightcap_regenhash(struct work *work);
+void precalc_nightcap_hash(dev_blk_ctx* blk, uint32_t *midstate, uint32_t *pdata);
 
 #endif		// __ETHASH_H

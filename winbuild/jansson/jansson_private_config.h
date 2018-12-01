@@ -7,6 +7,7 @@
 /* #undef HAVE_SYS_TIME_H */
 /* #undef HAVE_SYS_TYPES_H */
 #define HAVE_STDINT_H 1
+#define HAVE_SNPRINTF 1
 
 #define HAVE_CLOSE 1
 #define HAVE_GETPID 1

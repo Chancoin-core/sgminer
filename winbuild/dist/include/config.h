@@ -61,7 +61,8 @@
 #define CURL_STATICLIB 1
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "zlib.lib")
-#pragma comment(lib, "openssl.lib")
+#pragma comment(lib, "libeay32.lib")
+#pragma comment(lib, "ssleay32.lib")
 #pragma comment(lib, "libcurl_a.lib")
 #endif
 

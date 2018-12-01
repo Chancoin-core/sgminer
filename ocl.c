@@ -728,7 +728,89 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
 
     applog(LOG_DEBUG, "GPU %d: computing max. global thread count to %u", gpu, (unsigned)(cgpu->thread_concurrency));
   }
-  else if (!cgpu->opt_tc) {
+  else if (cgpu->algorithm.type == ALGO_NIGHTCAP && !cgpu->opt_tc) {
+	  size_t glob_thread_count;
+	  long max_int;
+	  unsigned char type = 0;
+
+	  // determine which intensity type to use
+	  if (cgpu->rawintensity > 0) {
+		  glob_thread_count = cgpu->rawintensity;
+		  max_int = glob_thread_count;
+		  type = 2;
+	  }
+	  else if (cgpu->xintensity > 0) {
+		  glob_thread_count = clState->compute_shaders * ((cgpu->algorithm.xintensity_shift) ? (1UL << (cgpu->algorithm.xintensity_shift + cgpu->xintensity)) : cgpu->xintensity);
+		  max_int = cgpu->xintensity;
+		  type = 1;
+	  }
+	  else {
+		  glob_thread_count = 1UL << (cgpu->algorithm.intensity_shift + cgpu->intensity);
+		  max_int = ((cgpu->dynamic) ? MAX_INTENSITY : cgpu->intensity);
+	  }
+
+	  glob_thread_count = ((glob_thread_count < cgpu->work_size) ? cgpu->work_size : glob_thread_count);
+
+	  // if TC * scratchbuf size is too big for memory... reduce to max
+	  if ((glob_thread_count * LYRA_SCRATCHBUF_SIZE) >= (uint64_t)cgpu->max_alloc) {
+
+		  /* Selected intensity will not run on this GPU. Not enough memory.
+		  * Adapt the memory setting. */
+		  // depending on intensity type used, reduce the intensity until it fits into the GPU max_alloc
+		  switch (type) {
+			  //raw intensity
+		  case 2:
+			  while ((glob_thread_count * LYRA_SCRATCHBUF_SIZE) > (uint64_t)cgpu->max_alloc) {
+				  --glob_thread_count;
+			  }
+
+			  max_int = glob_thread_count;
+			  cgpu->rawintensity = glob_thread_count;
+			  break;
+
+			  //x intensity
+		  case 1:
+			  glob_thread_count = cgpu->max_alloc / LYRA_SCRATCHBUF_SIZE;
+			  max_int = glob_thread_count / clState->compute_shaders;
+
+			  while (max_int && ((clState->compute_shaders * (1UL << max_int)) > glob_thread_count)) {
+				  --max_int;
+			  }
+
+			  /* Check if max_intensity is >0. */
+			  if (max_int < MIN_XINTENSITY) {
+				  applog(LOG_ERR, "GPU %d: Max xintensity is below minimum.", gpu);
+				  max_int = MIN_XINTENSITY;
+			  }
+
+			  cgpu->xintensity = max_int;
+			  glob_thread_count = clState->compute_shaders * (1UL << max_int);
+			  break;
+
+		  default:
+			  glob_thread_count = cgpu->max_alloc / LYRA_SCRATCHBUF_SIZE;
+			  while (max_int && ((1UL << max_int) & glob_thread_count) == 0) {
+				  --max_int;
+			  }
+
+			  /* Check if max_intensity is >0. */
+			  if (max_int < MIN_INTENSITY) {
+				  applog(LOG_ERR, "GPU %d: Max intensity is below minimum.", gpu);
+				  max_int = MIN_INTENSITY;
+			  }
+
+			  cgpu->intensity = max_int;
+			  glob_thread_count = 1UL << max_int;
+			  break;
+		  }
+	  }
+
+	  // TC is glob thread count
+	  cgpu->thread_concurrency = glob_thread_count; 
+
+	  applog(LOG_DEBUG, "GPU %d: computing max. global thread count to %u", gpu, (unsigned)(cgpu->thread_concurrency));
+  }
+  else if (!cgpu->opt_tc) { 
     unsigned int sixtyfours;
 
     sixtyfours = cgpu->max_alloc / 131072 / 64 / (algorithm->n / 1024) - 1;
@@ -801,7 +883,8 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
     return NULL;
   }
 
-  if(algorithm->type == ALGO_ETHASH) {
+  if(algorithm->type == ALGO_ETHASH ||
+	  algorithm->type == ALGO_NIGHTCAP) {
     clState->GenerateDAG = clCreateKernel(clState->program, "GenerateDAG", &status);
     if (status != CL_SUCCESS) {
       applog(LOG_ERR, "Error %d while creating DAG generation kernel.", (int) status);
@@ -826,10 +909,10 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
     }
   }
 
-  size_t bufsize;
-  size_t buf1size;
-  size_t buf3size;
-  size_t buf2size;
+  size_t bufsize=0;
+  size_t buf1size=0;
+  size_t buf3size=0;
+  size_t buf2size=0;
   size_t readbufsize = (algorithm->type == ALGO_CRE) ? 168 : 128;
 
   if (algorithm->rw_buffer_size < 0) {
@@ -881,6 +964,13 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
       applog(LOG_DEBUG, "lyra2REv2 buffer sizes: %lu RW, %lu RW", (unsigned long)bufsize, (unsigned long)buf1size);
       // scrypt/n-scrypt
     }
+	 else if (algorithm->type == ALGO_NIGHTCAP) {
+
+		 /* The scratch/pad-buffer needs 32kBytes memory per thread. */
+		 bufsize = LYRA_SCRATCHBUF_SIZE * cgpu->thread_concurrency;
+		 buf1size = 4 * 8 * cgpu->thread_concurrency; //result hashes (only used for debug kernel)
+		 readbufsize = 80; // normal bitcoin header size
+	 }
     else {
       size_t ipt = (algorithm->n / cgpu->lookup_gap + (algorithm->n % cgpu->lookup_gap > 0));
       bufsize = 128 * ipt * cgpu->thread_concurrency;
@@ -935,6 +1025,19 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
         return NULL;
       }
     }
+	 else if (algorithm->type == ALGO_NIGHTCAP) {
+#ifndef DEBUG_NIGHTCAP_HASH
+       if (algorithm->n_extra_kernels > 0)
+#endif
+       {
+         // need additionnal buffers
+         clState->buffer1 = clCreateBuffer(clState->context, CL_MEM_READ_WRITE, buf1size, NULL, &status);
+         if (status != CL_SUCCESS && !clState->buffer1) {
+           applog(LOG_DEBUG, "Error %d: clCreateBuffer (buffer1), decrease TC or increase LG", status);
+           return NULL;
+         }
+       }
+	 }
     else {
       clState->buffer1 = clCreateBuffer(clState->context, CL_MEM_READ_WRITE, bufsize, NULL, &status); // we don't need that much just tired...
       if (status != CL_SUCCESS && !clState->buffer1) {
@@ -955,6 +1058,11 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize, algorithm_t *alg
 
   if (algorithm->type == ALGO_ETHASH) {
     readbufsize = 32UL;
+    clState->DAG = clState->EthCache = NULL;
+  }
+
+  if (algorithm->type == ALGO_NIGHTCAP) {
+    readbufsize = 80; // input block header is the normal bitcoin block size
     clState->DAG = clState->EthCache = NULL;
   }
 

@@ -9,14 +9,15 @@
  */
 
 #include "config.h"
+#include "miner.h"
 
 #ifdef HAVE_NVML
 
 /* NVML is available for Linux and Windows only */
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__MACH__)
 #include "miner.h"
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__MACH__)
 #include <stdlib.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -328,7 +329,7 @@ void nvml_init() {
     opt_nonvml = true;
 }
 
-void nvml_gpu_temp_and_fanspeed(const unsigned int __unused, float *temp, int *fanspeed) {
+void nvml_gpu_temp_and_fanspeed(const unsigned int a, float *temp, int *fanspeed) {
     *temp = -1.0f;
     *fanspeed = -1;
 }

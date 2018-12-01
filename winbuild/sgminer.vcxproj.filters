@@ -263,6 +263,12 @@
     <ClCompile Include="..\sph\gost_streebog.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\algorithm\nightcap.c">
+      <Filter>Source Files\algorithm</Filter>
+    </ClCompile>
+    <ClCompile Include="..\algorithm\nightgencache.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\adl.h">

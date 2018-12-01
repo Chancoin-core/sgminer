@@ -241,7 +241,7 @@ static inline int fsync (int fd)
 #endif
 
 #ifdef HAVE_NVML
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__MACH__)
 #include "NVML/nvml.h"
 #endif
 void nvml_init();
@@ -249,15 +249,15 @@ void nvml_gpu_clocks(const unsigned int, unsigned int *gpu, unsigned int *mem);
 void nvml_gpu_defclocks(const unsigned int, unsigned int *gpu, unsigned int *mem);
 void nvml_gpu_ids(const unsigned int, int *vid, int *pid, int *svid, int *spid);
 void nvml_gpu_temp_and_fanspeed(const unsigned int, float *, int *);
-void nvml_gpu_usage(const unsigned int, unsigned int *w, unsigned int *limit);
+void nvml_gpu_usage(const unsigned int busid, unsigned int *w, unsigned int *limit);
 void nvml_print_devices();
 void nvml_shutdown();
 #endif
 
 #ifdef __linux__
-void sysfs_gpu_temp_and_fanspeed(const unsigned int, float *, int *);
+void sysfs_gpu_temp_and_fanspeed(const unsigned int a, float *b, int *c);
 #else
-inline void sysfs_gpu_temp_and_fanspeed(const unsigned int, float *, int *) {}
+inline void sysfs_gpu_temp_and_fanspeed(const unsigned int a, float *b, int *c) {}
 #endif
 
 /* Adding a device here will update all macros in the code that use
@@ -758,6 +758,16 @@ static inline void flip80(void *dest_p, const void *src_p)
     dest[i] = swab32(src[i]);
 }
 
+static inline void flip100(void *dest_p, const void *src_p)
+{
+	uint32_t *dest = (uint32_t *)dest_p;
+	const uint32_t *src = (uint32_t *)src_p;
+	int i;
+
+	for (i = 0; i < 25; i++)
+		dest[i] = swab32(src[i]);
+}
+
 static inline void flip128(void *dest_p, const void *src_p)
 {
   uint32_t *dest = (uint32_t *)dest_p;
@@ -1144,6 +1154,9 @@ extern bool opt_luffa_parallel;
 extern int opt_hamsi_expand_big;
 extern bool opt_hamsi_short;
 
+// Nightcap opts
+extern bool opt_nc_blake_precalc;
+
 #if LOCK_TRACKING
 extern pthread_mutex_t lockstat_lock;
 #endif
@@ -1350,6 +1363,7 @@ struct pool {
   int works;
   uint8_t SeedHash[32];
   uint32_t EpochNumber;
+  uint32_t HeightNumber;
   uint8_t Target[32];
   uint8_t EthWork[32];
 
@@ -1471,7 +1485,11 @@ struct pool {
   uint32_t gbt_bits;
   unsigned char *txn_hashes;
   size_t gbt_txns;
+  char *txn_data;
   size_t coinbase_len;
+
+  unsigned char pk_script[25];
+  size_t pk_script_size;
 
   /* Shared by both stratum & GBT */
   unsigned char *coinbase;
@@ -1505,6 +1523,7 @@ struct work {
 
   uint32_t EpochNumber;
   uint64_t Nonce;
+  uint32_t HeightNumber;
 
   int   rolls;
   int   drv_rolllimit; /* How much the driver can roll ntime */
@@ -1536,6 +1555,7 @@ struct work {
 
   bool    gbt;
   char    *coinbase;
+  char    *txn_data;
   int   gbt_txns;
 
   unsigned int  work_block;

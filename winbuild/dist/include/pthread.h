@@ -251,6 +251,8 @@ enum {
 #  elif defined(_UWIN) || defined(__MINGW32__)
 #    define HAVE_MODE_T
 #  endif
+
+#    define _TIMESPEC_DEFINED
 #endif
 
 /*
