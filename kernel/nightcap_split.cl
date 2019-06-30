@@ -167,7 +167,7 @@ __constant static const uint  c_u256[16] = {
 #define SPH_C32(x)    ((uint)(x ## U))
 #define SPH_T32(x) (as_uint(x))
 #define SPH_ROTL32(x, n) rotate(as_uint(x), as_uint(n))
-#define SPH_ROTR32(x, n)   SPH_ROTL32(x, (32 - (n)))
+#define SPH_ROTR32(x, n)   SPH_ROTL32(x, ( ((uint)32) - (n)))
 
 #define SPH_C64(x)    ((ulong)(x ## UL))
 #define SPH_T64(x) (as_ulong(x))
